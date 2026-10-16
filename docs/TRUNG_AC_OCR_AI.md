@@ -1,4 +1,4 @@
-# Trừng Ác tự động bằng OCR AI — 0.3.0 thử nghiệm
+# Trừng Ác tự động bằng OCR AI — 0.3.1 thử nghiệm
 
 Chế độ này dùng **mô hình nhận diện chữ RapidOCR 3.10, các trọng số ONNX đi kèm và ONNX Runtime CPU**. Ảnh được xử lý trên máy tính của bạn. Không cần khóa API và không gửi ảnh đến dịch vụ AI. Đây là chế độ riêng với luồng bán tự động có bốn điểm xác nhận của 0.2.0.
 
@@ -14,11 +14,14 @@ Chế độ này dùng **mô hình nhận diện chữ RapidOCR 3.10, các trọ
 8. Mở hội thoại Ngô Giới hoặc đứng đủ gần để hiện nút hội thoại. Bấm **Kiểm tra OCR** để nạp mô hình và xem chữ nhận diện từ ảnh thật. Nếu tên/nút không đọc rõ, tăng độ rõ màn hình trước khi chạy.
 9. **Lưu cấu hình OCR → Chạy Trừng ác tự động**. Giữ cửa sổ lệnh mở. Dùng nút Dừng khi cần.
 
+Nếu cập nhật từ 0.3.0: dừng auto, đóng cửa sổ máy chủ cũ rồi chép đè mã nguồn bản mới vào thư mục đang dùng. Giữ `.local/` và `.venv-ai/` để giữ thiết lập và thư viện. Chạy lại `CHAY_TREN_WINDOWS_AI.bat`, tải lại trang bằng Ctrl+F5 và kiểm tra panel hiện **0.3.1**. Thử một vòng trước.
+
 ## Cách tự động điều khiển
 
 Trong lúc chạy không có bốn câu hỏi xác nhận thủ công:
 
 - Tìm đúng Ngô Giới, chọn Nhận nhiệm vụ và đọc tên kẻ truy nã, bản đồ, tọa độ từ lời nhận nhiệm vụ.
+- Nếu game báo **“chưa hoàn thành nhiệm vụ lần trước, không thể nhận nhiệm vụ mới”**, xác nhận thông báo rồi mở Trừng Ác Lệnh để đọc nhiệm vụ đang có. Có thêm lượt OCR ảnh xám để đọc chữ màu nhỏ. Chỉ tiếp tục khi đọc rõ ranh giới tên mục tiêu/bản đồ và một cặp tọa độ; không hủy nhiệm vụ cũ. Thông báo chưa hỗ trợ hoặc thông tin mơ hồ sẽ dừng với nội dung OCR để kiểm tra.
 - Mở đúng Trừng Ác Lệnh và kiểm tra tọa độ khớp nhiệm vụ đã nhận. Chọn Đến địa điểm. Sau mỗi khoảng chờ, mở lại lệnh để kiểm tra trạng thái; chỉ bấm Triệu hồi khi game đã đổi nút sang Triệu hồi.
 - Kiểm tra trạng thái AUTO/Đánh quái, bật auto trong game nếu đang tắt, rồi đọc thông báo đã hạ đúng tên mục tiêu. Kinh nghiệm, rơi vật phẩm, mất mục tiêu hoặc giết quái khác đều không được tính là hoàn thành.
 - Tắt auto đánh quái, mở đúng định vị phù và dùng Di chuyển theo chuẩn bị ban đầu. Chờ đọc được Ngô Giới; không dựa riêng vào một khoảng ngủ để bấm Trả nhiệm vụ.
@@ -40,6 +43,6 @@ Thiết lập OCR lưu riêng ở `.local/ai_config.json`, gắn với thiết b
 
 Đối chiếu 16 điều kiện trên các ảnh được chọn từ clip đều đạt với mô hình thực, gồm hộp thoại, chữ nút, tọa độ, thông báo hạ mục tiêu và trạng thái auto. Đây là kiểm tra các khung hình riêng lẻ, không phải bằng chứng một vòng điều khiển đã thành công trên game thật. Bộ thư viện đã được phân giải và tải đủ wheel cho Windows 64-bit/Python 3.12; chưa chạy Windows trong môi trường phát triển.
 
-Các kiểm thử tự động dùng giao diện và ADB mô phỏng xác minh luồng một vòng, từ chối quái khác, dừng, sai kích thước, lưu cấu hình và đọc OCR. Chưa xác minh hoàn thành một vòng trên LDPlayer thật từ môi trường phát triển. Video ghi lại một vòng thông thường; chưa đủ để xác nhận mọi tình huống hết lượt, hết vật phẩm, nhân vật chết, popup lạ hoặc phiên bản game đổi bố cục. Khi gặp tình huống chưa đọc được, chế độ thử nghiệm sẽ báo lỗi để kiểm tra tiếp.
+Các kiểm thử tự động dùng giao diện và ADB mô phỏng xác minh luồng một vòng, phục hồi thông báo nhiệm vụ cũ từ đầu hoặc sau lần thử nhận, từ chối quái khác, dừng, sai kích thước, lưu cấu hình và đọc OCR. Chưa xác minh hoàn thành một vòng trên LDPlayer thật từ môi trường phát triển. Video ghi lại một vòng thông thường; chưa đủ để xác nhận mọi tình huống hết lượt, hết vật phẩm, nhân vật chết, popup lạ hoặc phiên bản game đổi bố cục. Khi gặp tình huống chưa đọc được, chế độ thử nghiệm sẽ báo lỗi để kiểm tra tiếp.
 
 Phạm vi bản này là **Trừng Ác** theo yêu cầu hiện tại. Hoạt động Tàng bảo đồ là hoạt động riêng và không nằm trong luồng OCR này.

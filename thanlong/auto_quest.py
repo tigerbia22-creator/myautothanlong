@@ -10,6 +10,8 @@ import threading
 import time
 import unicodedata
 
+from PIL import ImageOps
+
 
 def normalize(text):
     text = str(text).replace("đ", "d").replace("Đ", "D")
@@ -85,6 +87,24 @@ def target_was_killed(items, target):
             if actual == wanted:
                 return True
     return False
+
+
+def has_existing_quest_notice(items):
+    """Require both negative clauses of Ngô Giới's old-quest refusal."""
+    words = normalize(joined(items)).split()
+
+    def clause(negative, phrase):
+        expected = phrase.split()
+        for start, word in enumerate(words):
+            if word != negative:
+                continue
+            for length in range(len(expected) - 2, len(expected) + 3):
+                candidate = " ".join(words[start:start + length])
+                if SequenceMatcher(None, candidate, phrase).ratio() >= .86:
+                    return True
+        return False
+
+    return clause("chua", "chua hoan thanh nhiem vu lan truoc") and clause("khong", "khong the nhan nhiem vu moi")
 
 
 def find_label(items, phrase, *, first=None, minimum=.78):
@@ -210,11 +230,14 @@ class OCRQuestRunner:
             raise ValueError("Độ phân giải đã thay đổi. Dừng OCR và chọn lại vị trí trên ảnh mới.")
         return image
 
-    def _items(self, cfg, rect):
+    def _items(self, cfg, rect, *, grayscale=False, bottom_padding=0):
         image = self._capture(cfg)
+        if grayscale:
+            image = ImageOps.autocontrast(ImageOps.grayscale(image))
         w, h = image.size
         x, y, rw, rh = rect
         region = [round(x * w), round(y * h), max(1, round(rw * w)), max(1, round(rh * h))]
+        region[3] += bottom_padding
         region[2] = min(region[2], w - region[0]); region[3] = min(region[3], h - region[1])
         items = self.reader.read(image, region)
         self._check()
@@ -250,7 +273,7 @@ class OCRQuestRunner:
             self._wait(cfg["poll_interval"])
 
     def _header(self, cfg, phrase, minimum=.7, timeout=None):
-        return self._until(cfg, (.32, .10, .4, .09), lambda items: find_label(items, phrase, minimum=minimum),
+        return self._until(cfg, (.32, .10, .4, .12), lambda items: find_label(items, phrase, minimum=minimum),
                            timeout or cfg["dialog_timeout"], f"Không đọc được tiêu đề {phrase}")
 
     def _button(self, cfg, phrase, first, minimum=.75):
@@ -263,7 +286,7 @@ class OCRQuestRunner:
         if returning:
             deadline = time.monotonic() + cfg["return_timeout"]
             while True:
-                header = self._items(cfg, (.32, .10, .4, .09))
+                header = self._items(cfg, (.32, .10, .4, .12))
                 if find_label(header, "Ngô Giới", minimum=.8):
                     return
                 body = self._items(cfg, (.2, .25, .65, .5))
@@ -281,7 +304,7 @@ class OCRQuestRunner:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Chưa đọc được Ngô Giới sau khi dịch chuyển; không bấm Trả nhiệm vụ.")
                 self._wait(cfg["poll_interval"])
-        header = self._items(cfg, (.32, .10, .4, .09))
+        header = self._items(cfg, (.32, .10, .4, .12))
         if find_label(header, "Ngô Giới", minimum=.8):
             return
         if cfg.get("npc_anchor"):
@@ -291,6 +314,61 @@ class OCRQuestRunner:
                               cfg["return_timeout"] if returning else cfg["dialog_timeout"], "Không tìm được hội thoại Ngô Giới; có thể chọn điểm NPC một lần")
             self._tap_label(cfg, npc)
         self._header(cfg, "Ngô Giới", .8)
+
+    @staticmethod
+    def _npc_outcome(items, include_menu=False):
+        if has_existing_quest_notice(items):
+            return {"kind": "existing"}
+        target = OCRQuestRunner._parse_or_none(items)
+        if target:
+            return {"kind": "accepted", "target": target}
+        if include_menu:
+            accept = find_label(items, "Nhận nhiệm vụ", first="nhan", minimum=.75)
+            if accept:
+                return {"kind": "menu", "accept": accept}
+        return None
+
+    def _read_existing_target(self, cfg):
+        deadline = time.monotonic() + cfg["dialog_timeout"]
+        latest = ""
+        while True:
+            # Color text can hide the small connector 'ở'. A second OCR pass
+            # on grayscale restores it; never guess the name/map boundary.
+            # A one-pixel border variant also avoids fractional-resize artifacts
+            # around small accented letters, while keeping the same strict parser.
+            for grayscale, padding in ((False, 0), (True, 0), (True, 1)):
+                items = self._items(cfg, (.2, .19, .6, .13), grayscale=grayscale, bottom_padding=padding)
+                items = [item for item in items if item.get("confidence", 0) >= .65]
+                latest = joined(items)
+                target = self._parse_or_none(items)
+                if target:
+                    return target
+            if time.monotonic() >= deadline:
+                raise ValueError("Đang có nhiệm vụ cũ nhưng chưa đọc rõ tên, bản đồ và tọa độ trong Trừng Ác Lệnh. "
+                                 f"Không tự nhận lại hoặc hủy nhiệm vụ. OCR gần nhất: {latest[:240] or '(không đọc được chữ)'}. "
+                                 "Hãy chụp hộp Trừng Ác Lệnh để kiểm tra.")
+            self._wait(cfg["poll_interval"])
+
+    def _begin_quest(self, cfg):
+        self._open_npc(cfg)
+        rect = (.2, .19, .6, .59)
+        outcome = self._until(cfg, rect, lambda items: self._npc_outcome(items, include_menu=True),
+                              cfg["dialog_timeout"], "Chưa xác định được trạng thái nhiệm vụ tại Ngô Giới")
+        if outcome["kind"] == "menu":
+            self._tap_label(cfg, outcome["accept"])
+            outcome = self._until(cfg, rect, self._npc_outcome, cfg["dialog_timeout"],
+                                  "Ngô Giới chưa giao nhiệm vụ đọc được hoặc có thông báo chưa hỗ trợ")
+        if outcome["kind"] == "accepted":
+            self._button(cfg, "Ta biết rồi", "ta")
+            return outcome["target"]
+        self._stage(1, "Đang có nhiệm vụ cũ; đọc lại Trừng Ác Lệnh")
+        self._log("Ngô Giới từ chối giao mới vì chưa xong nhiệm vụ trước. Tiếp tục nhiệm vụ đang có.")
+        self._button(cfg, "Ta biết rồi", "ta")
+        self._tap(cfg, cfg["quest_slot"])
+        self._header(cfg, "Trừng Ác Lệnh", .65)
+        target = self._read_existing_target(cfg)
+        self._button(cfg, "Để sau", "de")
+        return target
 
     def _auto_state(self, cfg):
         items = self._items(cfg, (.80, .13, .09, .12))
@@ -344,15 +422,11 @@ class OCRQuestRunner:
         try:
             for iteration in range(1, cfg["repeat"] + 1):
                 self._update(iteration=iteration, target=None)
-                self._stage(0, "Mở Ngô Giới và nhận nhiệm vụ")
-                self._open_npc(cfg)
-                self._button(cfg, "Nhận nhiệm vụ", "nhan")
-                self._stage(1, "Đọc tên mục tiêu, bản đồ và tọa độ")
-                target = self._until(cfg, (.2, .19, .6, .17), self._parse_or_none,
-                                     cfg["dialog_timeout"], "Không đọc chắc thông tin truy nã")
+                self._stage(0, "Mở Ngô Giới; nhận mới hoặc tiếp tục nhiệm vụ đang có")
+                target = self._begin_quest(cfg)
+                self._stage(1, "Đã đọc tên mục tiêu, bản đồ và tọa độ")
                 self._update(target=target)
                 self._log(f"Mục tiêu: {target['name']} · {target['map']} ({target['x']},{target['y']}).")
-                self._button(cfg, "Ta biết rồi", "ta")
                 self._stage(2, "Di chuyển; chờ đúng lệnh cho phép Triệu hồi")
                 self._travel_and_summon(cfg, target)
                 self._stage(3, "Theo dõi chiến đấu và thông báo hạ đúng mục tiêu")

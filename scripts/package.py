@@ -4,7 +4,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "ThanLongAuto-LDPlayer-0.3.0"
+NAME = "ThanLongAuto-LDPlayer-0.3.1"
 
 
 def main():

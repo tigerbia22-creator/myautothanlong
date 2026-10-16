@@ -2,7 +2,9 @@
 
 Bản công cụ điều khiển **LDPlayer trên Windows** qua ADB, với hai hồ sơ **Trừng ác** và **Tàng bảo đồ**. Có ghi thao tác, nhận diện nút bằng ảnh, lặp hữu hạn, chạy thử không bấm và nút dừng.
 
-**Trạng thái 0.3.0:** có chế độ **Trừng Ác tự động bằng mô hình OCR AI chạy trên CPU**, đọc tên truy nã, tọa độ, nút và thông báo chiến đấu để điều khiển ADB. Chọn hai ô vật phẩm một lần; trong lúc chạy không có bốn điểm xác nhận thủ công. Chế độ này đang thử nghiệm, đã kiểm tra OCR thật trên clip và điều khiển trên thiết bị mô phỏng; chưa xác minh hoàn thành nhiệm vụ trên LDPlayer thật. Đây là mã nguồn Python, chưa phải `.exe` hay APK.
+**Trạng thái 0.3.1:** có chế độ **Trừng Ác tự động bằng mô hình OCR AI chạy trên CPU**, đọc tên truy nã, tọa độ, nút và thông báo chiến đấu để điều khiển ADB. Chọn hai ô vật phẩm một lần; trong lúc chạy không có bốn điểm xác nhận thủ công. Chế độ này đang thử nghiệm, đã kiểm tra OCR thật trên clip và điều khiển trên thiết bị mô phỏng; chưa xác minh hoàn thành nhiệm vụ trên LDPlayer thật. Đây là mã nguồn Python, chưa phải `.exe` hay APK.
+
+**Sửa lỗi nhiệm vụ cũ:** khi Ngô Giới báo chưa hoàn thành nhiệm vụ lần trước, phần mềm xác nhận thông báo, mở Trừng Ác Lệnh để đọc lại mục tiêu và tiếp tục nhiệm vụ đó. Nếu không đọc rõ tên/bản đồ/tọa độ thì dừng với lỗi cụ thể. Có thể bắt đầu khi hộp lời giao nhiệm vụ hoặc thông báo nhiệm vụ cũ đang mở.
 
 **Dùng chế độ mới:** chạy **`CHAY_TREN_WINDOWS_AI.bat`**, theo [hướng dẫn Trừng Ác OCR AI](docs/TRUNG_AC_OCR_AI.md). Không cần khóa API. Phạm vi hiện tại chỉ là Trừng Ác; Tàng bảo đồ là hoạt động riêng.
 
