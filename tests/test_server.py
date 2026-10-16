@@ -47,6 +47,21 @@ class FakeADB:
         self.events.append(("keyevent", code))
 
 
+class FakeOCR:
+    def __init__(self):
+        self.ready = False
+
+    def info(self):
+        return {"available": True, "ready": self.ready, "model": "test fake OCR", "error": None}
+
+    def probe(self, image):
+        self.ready = True
+        return {"items": [], "elapsed_ms": 1, "model": "test fake OCR"}
+
+    def read(self, image, region=None):
+        return []
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
         FakeADB.events = []
@@ -292,6 +307,42 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("/api/template", {"x": 10, "y": 20, "width": 12, "height": 12, "capture_id": old_capture})[0], 400)
         self.assertFalse(FakeADB.events)
         self.assertEqual(self.request("/api/tap", {"x": 10, "y": 20})[0], 200)
+
+    def test_ai_requires_current_capture_configuration_and_model_probe(self):
+        self.ctl.ocr = FakeOCR()
+        self.select()
+        self.request("/api/screenshot")
+        capture = self.ctl.last_capture_id
+        cfg = {"quest_slot": [10, 10], "return_slot": [20, 10], "repeat": 1, "allow_teleport": True}
+        self.assertEqual(self.request("/api/ai/config", {"capture_id": "stale", "config": cfg})[0], 400)
+        status, saved = self.request("/api/ai/config", {"capture_id": capture, "config": cfg})
+        self.assertEqual(status, 200, saved)
+        self.assertTrue(saved["configured"])
+        self.assertEqual(saved["config"]["reference_size"], [100, 60])
+        self.assertEqual(self.request("/api/ai/run", {})[0], 400)
+        self.assertEqual(self.request("/api/ai/read", {"capture_id": capture})[0], 200)
+        status, runner = self.request("/api/ai/run", {})
+        self.assertEqual(status, 200, runner)
+        self.assertEqual(runner["mode"], "ai")
+        self.assertFalse(runner["awaiting_confirmation"])
+        self.assertEqual(self.request("/api/run", {"profile_id": "trung_ac"})[0], 400)
+        self.assertEqual(self.request("/api/stop", {})[0], 200)
+        deadline = time.monotonic() + 2
+        while self.ctl.ai_runner.status()["running"] and time.monotonic() < deadline:
+            time.sleep(.005)
+        self.assertFalse(self.ctl.ai_runner.status()["running"])
+        self.assertFalse(FakeADB.events)
+
+    def test_ai_configuration_does_not_follow_a_different_emulator(self):
+        self.ctl.ocr = FakeOCR()
+        self.select(); self.ctl.capture()
+        self.ctl.save_ai_config({"capture_id": self.ctl.last_capture_id, "config": {
+            "quest_slot": [10, 10], "return_slot": [20, 10], "allow_teleport": True}})
+        self.ctl.ocr.ready = True
+        FakeADB.available.append({"serial": "127.0.0.1:5557", "state": "device", "model": "LDPlayer2"})
+        self.ctl.set_device({"serial": "127.0.0.1:5557", "connect": False})
+        self.assertFalse(self.ctl.ai_state()["configured"])
+        self.assertEqual(self.request("/api/ai/run", {})[0], 400)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 .venv/
+.venv-ai/
+.venv-ocr-research/
 .local/
 __pycache__/
 *.py[cod]

@@ -25,7 +25,7 @@
       <header class="topbar"><div><span class="eyebrow">THẦN LONG MOBILE</span><h1>Bảng điều khiển</h1></div><span id="connectionBadge" class="status-pill"><span class="dot"></span> Chưa kết nối</span></header>
       <section class="intro"><div><h2>Tự động hóa theo cách của bạn<span>.</span></h2><p>Kết nối LDPlayer, thiết lập thao tác và quản lý hai chế độ trong một nơi.</p></div><span class="version-tag">ADB · LOCAL</span></section>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-      <div class="setup-notice"><span class="info-icon" aria-hidden="true">i</span><p><strong>Cần thiết lập trước khi chạy.</strong> Gán mẫu từ ảnh chụp LDPlayer của bạn trước khi chạy luồng Trừng ác theo clip. Tàng bảo đồ cần tự thiết lập thao tác; luôn kiểm tra kết quả trên giả lập.</p></div>
+      <div class="setup-notice"><span class="info-icon" aria-hidden="true">i</span><p><strong>Trừng ác tự động bằng OCR AI — thử nghiệm.</strong> Chọn hai ô vật phẩm một lần và kiểm tra chữ đọc được trước khi chạy. Phần mềm dừng nếu không xác định được trạng thái.</p></div>
 
       <section class="panel connection-panel" id="connection" aria-labelledby="connectionTitle">
         <div class="panel-heading"><div><span class="eyebrow">01 / THIẾT BỊ</span><h2 id="connectionTitle">Kết nối LDPlayer</h2></div><span id="deviceCount" class="muted small">Đang kiểm tra thiết bị…</span></div>
@@ -37,8 +37,25 @@
 
       <section class="mode-section" aria-labelledby="modeTitle"><div class="section-heading"><div><span class="eyebrow">02 / CHẾ ĐỘ</span><h2 id="modeTitle">Chọn kịch bản</h2></div><span class="muted small">Lưu riêng thao tác cho từng nhiệm vụ</span></div><div id="profileCards" class="profile-grid" role="group" aria-label="Chọn chế độ"></div></section>
 
+      <section class="panel ai-panel" id="aiPanel" aria-labelledby="aiTitle">
+        <div class="panel-heading"><div><span class="eyebrow">CHẾ ĐỘ TỰ ĐỘNG</span><h2 id="aiTitle">Trừng ác · nhận diện OCR AI</h2></div><span id="aiModel" class="small muted"></span></div>
+        <div class="ai-body">
+          <p id="aiAvailability" class="ai-explanation"></p>
+          <p class="small muted">Đọc tên truy nã, tọa độ và chữ trên nút; tự điều khiển theo trạng thái, không chờ bốn xác nhận thủ công. Cần có Trừng Ác Lệnh và phù đã lưu gần Ngô Giới.</p>
+          <div class="ai-points">
+            <div><strong>1. Ô Trừng Ác Lệnh</strong><span id="aiQuestPoint">Chưa chọn</span><button id="aiPickQuest" class="button secondary compact" data-run-lock>Chọn trên ảnh</button></div>
+            <div><strong>2. Ô định vị phù</strong><span id="aiReturnPoint">Chưa chọn</span><button id="aiPickReturn" class="button secondary compact" data-run-lock>Chọn trên ảnh</button></div>
+            <div><strong>Điểm hội thoại Ngô Giới</strong><span id="aiNPCPoint">OCR tự tìm</span><button id="aiPickNPC" class="button ghost compact" data-run-lock>Chọn tùy chọn</button></div>
+            <div><strong>Nút AUTO trong game</strong><span id="aiAutoPoint">OCR tự tìm</span><button id="aiPickAuto" class="button ghost compact" data-run-lock>Chọn tùy chọn</button></div>
+          </div>
+          <p id="aiPickHint" class="small muted">Bấm Chụp màn hình ở bên dưới, rồi chọn vị trí ô vật phẩm trên ảnh. Chọn điểm chỉ lưu cấu hình, không bấm vào game.</p>
+          <div class="ai-settings"><label class="field">Số vòng<input id="aiRepeat" type="number" min="1" max="30" value="1" data-run-lock></label><label class="ai-checkbox"><input id="aiTeleport" type="checkbox" data-run-lock> Tôi đã kiểm tra phù lưu gần Ngô Giới ở Tô Châu và cho phép sử dụng phù.</label></div>
+          <div class="button-group ai-buttons"><button id="aiRead" class="button secondary" data-run-lock>Kiểm tra OCR</button><button id="aiSave" class="button secondary" data-run-lock>Lưu cấu hình OCR</button><button id="aiRun" class="button primary" data-run-lock>▶ Chạy Trừng ác tự động</button><button id="aiStop" class="button danger" disabled>■ Dừng</button></div>
+          <pre id="aiReadResult" class="ai-result" hidden></pre><p id="aiProgress" class="ai-explanation"></p>
+        </div>
+      </section>
       <section class="panel preset-panel" id="presetPanel" aria-labelledby="presetTitle">
-        <div class="panel-heading"><div><span class="eyebrow">THAM KHẢO TỪ CLIP</span><h2 id="presetTitle">Luồng Trừng ác có hướng dẫn</h2></div><button id="loadPreset" class="button secondary" data-run-lock disabled>Nạp luồng Trừng ác từ clip</button></div>
+        <div class="panel-heading"><div><span class="eyebrow">TÙY CHỌN BÁN TỰ ĐỘNG</span><h2 id="presetTitle">Luồng có xác nhận / ghi thao tác</h2></div><button id="loadPreset" class="button secondary" data-run-lock disabled>Nạp luồng Trừng ác từ clip</button></div>
         <div class="preset-body"><p id="presetDescription" class="small muted">Đang tải thông tin luồng tham khảo…</p><p class="preset-warning">Luồng này cần mẫu ảnh chụp trực tiếp từ giả lập; không dùng tọa độ hoặc ảnh thu nhỏ của clip để chạy. Bạn vẫn cần kiểm tra kết quả trong game.</p><details><summary>Bốn điểm dừng cần bạn xác nhận</summary><ol><li>Khi tới nơi: tự mở Trừng Ác Lệnh trên giả lập trước khi tiếp tục.</li><li>Sau giao chiến: kiểm tra đúng Ác Nhân yêu cầu đã bị hạ và Auto trong game đã tắt.</li><li>Khi chuẩn bị dịch chuyển: kiểm tra điểm đến gần Ngô Giới trước khi tiếp tục.</li><li>Khi đã về gần Ngô Giới: tự mở NPC trên giả lập trước khi tiếp tục.</li></ol><p>Chỉ nhấn “Xác nhận, tiếp tục” khi đã hoàn thành yêu cầu. Chạy thử cũng dừng để chờ xác nhận.</p></details><details><summary>Mẫu ảnh cần gán trên giả lập</summary><ul id="presetTemplates"></ul></details></div>
       </section>
 

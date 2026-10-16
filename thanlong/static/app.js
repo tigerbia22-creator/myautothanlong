@@ -3,7 +3,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const token = document.querySelector('meta[name="thanlong-token"]').content;
-  const serverUnavailableMessage = "Không liên lạc được với máy chủ trên máy tính. Mở CHAY_TREN_WINDOWS.bat, giữ cửa sổ lệnh mở rồi tải lại trang.";
+  const serverUnavailableMessage = "Không liên lạc được với máy chủ trên máy tính. Mở lại tệp khởi động đang dùng (CHAY_TREN_WINDOWS_AI.bat cho OCR AI), giữ cửa sổ lệnh mở rồi tải lại trang.";
   const typeNames = {
     tap: "Chạm tọa độ", wait: "Chờ", swipe: "Vuốt", keyevent: "Phím Android",
     tap_image: "Chạm mẫu ảnh", wait_image: "Chờ mẫu ảnh",
@@ -28,6 +28,9 @@
   let lastLogSignature = "";
   let lastCardSignature = "";
   let noticeTimer;
+  let aiDraft = null;
+  let aiDirty = false;
+  let aiPointMode = null;
   let serverOffline = false;
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -96,6 +99,7 @@
     if (recovered && $("notice").textContent === serverUnavailableMessage) notify("Đã liên lạc lại được với máy chủ trên máy tính.");
     const oldSerial = state && state.device && state.device.serial;
     state = next;
+    if (next.ai && (!aiDraft || (!aiDirty && !busy))) aiDraft = clone(next.ai.config);
     if (oldSerial && next.device && oldSerial !== next.device.serial) clearScreenshot();
     let editorChanged = false;
     for (const item of next.profiles || []) {
@@ -113,6 +117,7 @@
     renderPresetPanel();
     if (editorChanged) renderEditor();
     updateControls();
+    renderAI();
   }
 
   async function refreshState(first = false) {
@@ -166,7 +171,7 @@
 
   function renderCards() {
     const container = $("profileCards");
-    const signature = JSON.stringify([...drafts.values()].map((item) => [item.id, item.name, item.steps.length, missingTemplates(item), item.reference_size, dirty.has(item.id), item.id === selectedId]));
+    const signature = JSON.stringify({profiles: [...drafts.values()].map((item) => [item.id, item.name, item.steps.length, missingTemplates(item), item.reference_size, dirty.has(item.id), item.id === selectedId]), ai: state && state.ai && [state.ai.available, state.ai.ready, state.ai.configured, aiDirty]});
     if (signature === lastCardSignature) return;
     lastCardSignature = signature;
     const focusId = document.activeElement && document.activeElement.dataset.profileId;
@@ -184,10 +189,10 @@
       symbol.textContent = item.id === "trung_ac" ? "⚔" : "◇";
       const content = document.createElement("div");
       const title = document.createElement("h3");
-      title.textContent = item.name;
+      title.textContent = item.id === "trung_ac" ? "Trừng ác" : item.name;
       const description = document.createElement("p");
       description.className = "profile-description";
-      description.textContent = item.id === "trung_ac" ? "Kịch bản nhiệm vụ trừng ác" : "Kịch bản sử dụng tàng bảo đồ";
+      description.textContent = item.id === "trung_ac" ? "OCR AI tự đọc chữ và điều khiển" : "Kịch bản sử dụng tàng bảo đồ";
       const status = document.createElement("span");
       const count = (item.steps || []).length;
       const missing = missingTemplates(item);
@@ -197,6 +202,11 @@
       dot.className = "dot";
       const setupText = missing ? `Cần gán ảnh cho ${missing} bước` : !item.reference_size ? "Cần ảnh tham chiếu" : "Cần kiểm thử trên giả lập";
       status.append(dot, document.createTextNode(count ? `${count} thao tác · ${dirty.has(item.id) ? "Chưa lưu · " : ""}${setupText}` : "Cần thiết lập thao tác"));
+      if (item.id === "trung_ac" && state && state.ai) {
+        const ai = state.ai;
+        status.className = `profile-state${ai.configured && ai.ready && !aiDirty ? " ready" : ""}`;
+        status.replaceChildren(dot, document.createTextNode(!ai.available ? "Mở CHAY_TREN_WINDOWS_AI.bat" : aiDirty ? "Cấu hình OCR chưa lưu" : !ai.configured ? "Chọn hai ô vật phẩm cho OCR" : !ai.ready ? "Cần kiểm tra OCR" : "OCR đã cấu hình · cần kiểm thử game"));
+      }
       content.append(title, description, status);
       const check = document.createElement("span");
       check.className = "profile-check";
@@ -469,6 +479,7 @@
     $("stopRun").textContent = state && state.runner && state.runner.stopping ? "Đang dừng…" : "■ Dừng";
     $("startRun").title = deviceEdited ? "Áp dụng cài đặt thiết bị trước khi chạy." : !hasSteps ? "Hãy thêm ít nhất một thao tác." : !ready ? "Gán đầy đủ mẫu ảnh và kích thước tham chiếu trước khi chạy." : !hasDevice ? "Kết nối LDPlayer trước khi chạy." : "Gửi thao tác đến LDPlayer đã chọn";
     updateScreenMode();
+    updateAIControls();
   }
 
   function renderRunner() {
@@ -485,6 +496,7 @@
       const stepIndex = Number(runner.step_index);
       progress.textContent = `Vòng ${runner.iteration || 1}/${runner.repeat || 1} · Bước ${Number.isFinite(stepIndex) ? Math.max(0, stepIndex + 1) : 0}/${current ? current.steps.length : "?"}`;
       progress.title = runner.step_name || "";
+      if (runner.mode === "ai") progress.textContent = `OCR · Vòng ${runner.iteration}/${runner.repeat} · ${runner.step_name}`;
     } else { progress.textContent = runner.error ? "Xem lỗi trong nhật ký" : ""; progress.title = ""; }
     $("confirmationPanel").hidden = !(runner.running && runner.awaiting_confirmation);
     $("confirmationPrompt").textContent = runner.confirmation_prompt || "";
@@ -561,6 +573,7 @@
     screenUrl = null;
     screenSize = null;
     screenCaptureId = null;
+    aiPointMode = null;
     $("screenshot").hidden = true;
     $("screenshot").removeAttribute("src");
     $("screenshotEmpty").hidden = false;
@@ -604,6 +617,15 @@
     if (screenUrl) URL.revokeObjectURL(screenUrl);
     screenUrl = url;
     screenSize = {width: img.naturalWidth, height: img.naturalHeight};
+    if (aiDraft && ((aiDraft.reference_size && (aiDraft.reference_size[0] !== screenSize.width || aiDraft.reference_size[1] !== screenSize.height)) ||
+        (aiDraft.device_serial && state.device && aiDraft.device_serial !== state.device.serial))) {
+      for (const key of ["quest_slot", "return_slot", "npc_anchor", "auto_toggle"]) aiDraft[key] = null;
+      aiDraft.reference_size = [screenSize.width, screenSize.height];
+      aiDraft.device_serial = state.device.serial;
+      aiDraft.allow_teleport = false;
+      aiDirty = true;
+      notify("Ảnh hoặc thiết bị đã đổi. Chọn lại hai ô vật phẩm cho chế độ OCR.", "warning");
+    }
     screenCaptureId = captureId;
     img.hidden = false;
     $("screenshotEmpty").hidden = true;
@@ -747,10 +769,12 @@
   $("saveProfile").addEventListener("click", () => { if (!locked()) perform(async () => { await saveCurrentProfile(); notify("Đã lưu kịch bản."); }); });
   $("captureButton").addEventListener("click", () => { if (!locked()) perform(captureScreen); });
   $("recordToggle").addEventListener("change", () => {
+    aiPointMode = null;
     if ($("recordToggle").checked) { cropMode = false; resetCrop(); }
     updateScreenMode();
   });
   $("cropToggle").addEventListener("click", () => {
+    aiPointMode = null;
     if (locked()) return;
     if (!screenSize) { notify("Chụp màn hình trước khi chọn mẫu ảnh.", "warning"); return; }
     cropMode = !cropMode;
@@ -775,6 +799,17 @@
     if (cropMode && dragStart && !locked()) updateSelection(imagePoint(event, true));
   });
   $("screenshotStage").addEventListener("pointerup", (event) => {
+    if (aiPointMode && !locked() && !deviceEdited) {
+      const point = imagePoint(event);
+      if (point) {
+        aiDraft[aiPointMode] = [point.x, point.y];
+        aiDraft.reference_size = [screenSize.width, screenSize.height];
+        aiDirty = true; aiPointMode = null; dragStart = null;
+        $("aiPickHint").textContent = "Đã chọn điểm. Lưu cấu hình OCR sau khi chọn đủ hai ô vật phẩm.";
+        renderAI(); updateAIControls();
+      }
+      return;
+    }
     if (!dragStart || locked()) { dragStart = null; return; }
     const start = dragStart;
     if (cropMode) {
@@ -873,8 +908,72 @@
     });
   });
   window.addEventListener("beforeunload", (event) => {
-    if (dirty.size) { event.preventDefault(); event.returnValue = ""; }
+    if (dirty.size || aiDirty) { event.preventDefault(); event.returnValue = ""; }
   });
+
+  function renderAI() {
+    const ai = state && state.ai;
+    $("aiModel").textContent = ai && ai.model || "OCR chưa tải";
+    $("aiAvailability").textContent = !ai || !ai.available ? "Để dùng OCR AI: đóng bản đang chạy, mở CHAY_TREN_WINDOWS_AI.bat trong bản cập nhật này." :
+      ai.ready ? "Mô hình OCR đã sẵn sàng. Chữ và trạng thái không rõ sẽ làm luồng dừng, không tự xác nhận hộ." : "Bấm Kiểm tra OCR để nạp mô hình và xem chữ đọc được từ ảnh hiện tại.";
+    if (ai && ai.error) $("aiAvailability").textContent = ai.error;
+    if (aiDraft) {
+      for (const [key, id] of [["quest_slot", "aiQuestPoint"], ["return_slot", "aiReturnPoint"], ["npc_anchor", "aiNPCPoint"], ["auto_toggle", "aiAutoPoint"]]) {
+        $(id).textContent = aiDraft[key] ? `(${aiDraft[key].join(", ")})` : key.endsWith("slot") ? "Chưa chọn" : "OCR tự tìm";
+      }
+      if (document.activeElement !== $("aiRepeat")) $("aiRepeat").value = aiDraft.repeat || 1;
+      $("aiTeleport").checked = aiDraft.allow_teleport === true;
+    }
+    const r = state && state.runner;
+    $("aiProgress").textContent = r && r.mode === "ai" ? `${r.running ? "Đang chạy" : "Đã kết thúc"} · ${r.step_name || ""}${r.target ? ` · ${r.target.name} — ${r.target.map} (${r.target.x},${r.target.y})` : ""}${r.error ? ` · Lỗi: ${r.error} Kiểm tra AUTO trong game nếu đang bật.` : ""}` : "";
+    updateAIControls();
+  }
+
+  function updateAIControls() {
+    $("aiPanel").hidden = selectedId !== "trung_ac";
+    const active = locked() || deviceEdited;
+    const hasImage = Boolean(screenSize && screenCaptureId && state && state.connected);
+    const available = Boolean(state && state.ai && state.ai.available);
+    const configuredDraft = Boolean(aiDraft && aiDraft.quest_slot && aiDraft.return_slot && aiDraft.allow_teleport && hasImage);
+    for (const id of ["aiPickQuest", "aiPickReturn", "aiPickNPC", "aiPickAuto"]) $(id).disabled = active || !hasImage;
+    $("aiRead").disabled = active || !hasImage || !available;
+    $("aiSave").disabled = active || Boolean(aiPointMode) || !configuredDraft;
+    $("aiRun").disabled = active || Boolean(aiPointMode) || !configuredDraft || !available || !state.ai.ready;
+    $("aiStop").disabled = !running() || Boolean(state.runner.stopping);
+  }
+
+  for (const [id, key, label] of [["aiPickQuest", "quest_slot", "ô Trừng Ác Lệnh"], ["aiPickReturn", "return_slot", "ô định vị phù"],
+      ["aiPickNPC", "npc_anchor", "điểm hội thoại Ngô Giới"], ["aiPickAuto", "auto_toggle", "nút AUTO trong game"]]) {
+    $(id).addEventListener("click", () => {
+      if (locked() || deviceEdited || !screenSize) return;
+      aiPointMode = key; cropMode = false; $("recordToggle").checked = false; resetCrop(); updateScreenMode();
+      $("aiPickHint").textContent = `Bấm vào ${label} trên ảnh màn hình bên dưới. Thao tác này chỉ chọn điểm, không gửi lệnh vào game.`;
+      $("screenshotStage").scrollIntoView({behavior: "smooth", block: "center"});
+    });
+  }
+  $("aiRepeat").addEventListener("input", () => { if (aiDraft) { aiDraft.repeat = Number($("aiRepeat").value); aiDirty = true; } });
+  $("aiTeleport").addEventListener("change", () => { if (aiDraft) { aiDraft.allow_teleport = $("aiTeleport").checked; aiDirty = true; updateAIControls(); } });
+  async function saveAI() {
+    if (!aiDraft) throw new Error("Chưa có cấu hình OCR.");
+    state.ai = await api("/api/ai/config", {capture_id: requireCaptureId(), config: aiDraft});
+    aiDraft = clone(state.ai.config); aiDirty = false; renderAI();
+  }
+  $("aiSave").addEventListener("click", () => { if (!locked()) perform(async () => { await saveAI(); notify("Đã lưu hai ô vật phẩm và cấu hình OCR."); }); });
+  $("aiRead").addEventListener("click", () => { if (!locked()) perform(async () => {
+    const result = await api("/api/ai/read", {capture_id: requireCaptureId()});
+    $("aiReadResult").textContent = `${result.model} · ${result.elapsed_ms} ms\n` + result.items.map(item => `${Math.round(item.confidence * 100)}%  ${item.text}`).join("\n");
+    $("aiReadResult").hidden = false;
+    const next = await api("/api/state"); mergeState(next); renderAI();
+    notify("Đã đọc OCR thật từ ảnh. Kiểm tra tên và chữ có đủ rõ trước khi chạy.");
+  }); });
+  $("aiRun").addEventListener("click", () => { if (!locked()) perform(async () => {
+    await saveAI();
+    state.runner = await api("/api/ai/run", {});
+    aiPointMode = null; $("recordToggle").checked = false; cropMode = false;
+    renderRunner(); renderLogs(); renderAI();
+    notify("Đã bắt đầu Trừng ác tự động bằng OCR. Theo dõi lần chạy đầu và dùng Dừng khi cần.");
+  }); });
+  $("aiStop").addEventListener("click", () => $("stopRun").click());
   refreshState(true);
   loadPresets();
   setInterval(() => { if (!document.hidden && !busy && !confirming) refreshState(); }, 1000);

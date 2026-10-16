@@ -4,14 +4,14 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "ThanLongAuto-LDPlayer-0.2.0"
+NAME = "ThanLongAuto-LDPlayer-0.3.0"
 
 
 def main():
     output = ROOT / "dist"
     output.mkdir(exist_ok=True)
     archive = output / f"{NAME}.zip"
-    files = [ROOT / name for name in ("README.md", "requirements.txt", "CHAY_TREN_WINDOWS.bat", "KIEM_TRA_KET_NOI.bat")]
+    files = [ROOT / name for name in ("README.md", "requirements.txt", "requirements-ai.txt", "CHAY_TREN_WINDOWS.bat", "CHAY_TREN_WINDOWS_AI.bat", "KIEM_TRA_KET_NOI.bat")]
     for folder in ("thanlong", "tests", "scripts", "docs"):
         files.extend(path for path in (ROOT / folder).rglob("*")
                      if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc")

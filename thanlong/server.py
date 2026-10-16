@@ -24,6 +24,8 @@ from PIL import Image
 from .adb import ADB, ADBError
 from .automation import Runner, template_path, validate_profile
 from .presets import PRESET_ID, build_preset, list_presets
+from .ocr import OCRReader
+from .auto_quest import OCRQuestRunner, validate_config
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT.parent / ".local"
@@ -65,7 +67,7 @@ def integer(value, name, low=0, high=16383):
 
 
 class Controller:
-    def __init__(self, data_dir: Path, adb_path: str | None = None):
+    def __init__(self, data_dir: Path, adb_path: str | None = None, ocr_reader=None):
         self.data_dir = Path(data_dir)
         self.template_dir = self.data_dir / "templates"
         self.profile_dir = self.data_dir / "profiles"
@@ -83,6 +85,19 @@ class Controller:
             self.device["adb_path"] = adb_path
         self.adb = ADB(self.device["adb_path"], self.device["serial"])
         self.runner = Runner(self.adb, self.template_dir)
+        self.ocr = ocr_reader or OCRReader()
+        self.ai_runner = OCRQuestRunner(self.adb, self.ocr)
+        self.last_mode = "manual"
+        self.ai_config = {"reference_size": None, "quest_slot": None, "return_slot": None,
+                          "npc_anchor": None, "auto_toggle": None, "return_map": "Tô Châu", "repeat": 1, "allow_teleport": False}
+        ai_path = self.data_dir / "ai_config.json"
+        if ai_path.is_file():
+            try:
+                saved = json.loads(ai_path.read_text(encoding="utf-8"))
+                if isinstance(saved, dict):
+                    self.ai_config.update(saved)
+            except (OSError, ValueError):
+                pass
         self.devices = []
         self.device_error = None
         self.last_image = None
@@ -103,7 +118,7 @@ class Controller:
                 }
 
     def _idle(self):
-        if self.runner.status()["running"]:
+        if self.runner.status()["running"] or self.ai_runner.status()["running"]:
             raise ValueError("Hãy dừng auto trước khi đổi thiết bị hoặc chỉnh thao tác.")
 
     def state(self):
@@ -111,7 +126,8 @@ class Controller:
             return {"device": {**self.device, "error": self.device_error},
                     "devices": copy.deepcopy(self.devices),
                     "profiles": copy.deepcopy(list(self.profiles.values())),
-                    "runner": self.runner.status(),
+                    "runner": self.ai_runner.status() if self.last_mode == "ai" else self.runner.status(),
+                    "ai": self.ai_state(),
                     "connected": any(d["serial"] == self.device["serial"] and d["state"] == "device"
                                      for d in self.devices)}
 
@@ -160,6 +176,8 @@ class Controller:
             self.device_error = None
             self.adb = candidate
             self.runner = Runner(candidate, self.template_dir)
+            self.ai_runner = OCRQuestRunner(candidate, self.ocr)
+            self.last_mode = "manual"
             self.last_image = None
             self.last_serial = None
             self.last_capture_id = None
@@ -306,6 +324,7 @@ class Controller:
 
     def run(self, body):
         with self.lock:
+            self._idle()
             profile_id = body.get("profile_id")
             if profile_id not in self.profiles:
                 raise ValueError("Chọn hồ sơ trước khi chạy.")
@@ -313,12 +332,14 @@ class Controller:
             if not isinstance(dry_run, bool):
                 raise ValueError("dry_run cần là true hoặc false.")
             self.runner.start(copy.deepcopy(self.profiles[profile_id]), dry_run=dry_run)
+            self.last_mode = "manual"
             return self.runner.status()
 
     def stop(self):
         with self.lock:
             self.runner.stop()
-            return self.runner.status()
+            self.ai_runner.stop()
+            return self.ai_runner.status() if self.last_mode == "ai" else self.runner.status()
 
     def confirm(self, body):
         with self.lock:
@@ -330,6 +351,48 @@ class Controller:
             self._idle()
             draft = build_preset(preset_id, self.profiles["trung_ac"])
             return self.save_profile("trung_ac", draft)
+
+    def ai_state(self):
+        configured = False
+        try:
+            validate_config(self.ai_config)
+            configured = self.ai_config.get("device_serial") == self.device["serial"] and bool(self.device["serial"])
+        except (ValueError, TypeError):
+            pass
+        return {**self.ocr.info(), "config": copy.deepcopy(self.ai_config), "configured": configured}
+
+    def save_ai_config(self, body):
+        with self.lock:
+            self._idle()
+            self._check_capture(body)
+            if not isinstance(body.get("config"), dict):
+                raise ValueError("Thiếu cấu hình OCR.")
+            source = copy.deepcopy(body["config"])
+            source["reference_size"] = list(self.last_image.size)
+            source["device_serial"] = self.device["serial"]
+            config = validate_config(source)
+            write_json(self.data_dir / "ai_config.json", config)
+            self.ai_config = config
+            return self.ai_state()
+
+    def read_ai(self, body):
+        with self.lock:
+            self._idle()
+            self._check_capture(body)
+            image = self.last_image.copy()
+        return self.ocr.probe(image)
+
+    def run_ai(self):
+        with self.lock:
+            self._idle()
+            if not self.ocr.info()["ready"]:
+                raise ValueError("Bấm Kiểm tra OCR trên ảnh hiện tại trước khi chạy tự động.")
+            config = validate_config(self.ai_config)
+            if not self.device["serial"] or config.get("device_serial") != self.device["serial"]:
+                raise ValueError("Chọn lại hai ô vật phẩm và lưu OCR cho đúng thiết bị hiện tại.")
+            self.ai_runner.start(config)
+            self.last_mode = "ai"
+            return self.ai_runner.status()
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -445,6 +508,12 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_body()
                 if path == "/api/device":
                     return self.json_reply(ctl.set_device(body))
+                if path == "/api/ai/config":
+                    return self.json_reply(ctl.save_ai_config(body))
+                if path == "/api/ai/read":
+                    return self.json_reply(ctl.read_ai(body))
+                if path == "/api/ai/run":
+                    return self.json_reply(ctl.run_ai())
                 if path == "/api/screenshot":
                     with ctl.lock:
                         image = ctl.capture()
@@ -503,7 +572,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        controller.runner.stop()
+        controller.stop()
         server.server_close()
 
 
