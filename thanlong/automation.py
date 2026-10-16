@@ -9,13 +9,14 @@ from pathlib import Path
 import re
 import threading
 import time
+import uuid
 
 from PIL import Image
 
 from .vision import match_template
 
 
-ACTIONS = {"tap", "tap_image", "wait_image", "wait", "swipe", "keyevent"}
+ACTIONS = {"tap", "tap_image", "wait_image", "wait", "swipe", "keyevent", "confirm"}
 KEYS = {"BACK", "ENTER", "HOME", "MENU", "ESCAPE", "TAB"}
 _TEMPLATE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,123}\.png", re.IGNORECASE)
 
@@ -52,6 +53,10 @@ def validate_profile(profile: dict, template_dir: Path | None = None) -> dict:
         raise ValueError("Profile name must contain 1–200 characters.")
     result.setdefault("repeat", 1)
     _number(result["repeat"], "repeat", 1, 10000, integer=True)
+    if "single_cycle" in result and not isinstance(result["single_cycle"], bool):
+        raise ValueError("single_cycle must be true or false.")
+    if result.get("single_cycle") and result["repeat"] != 1:
+        raise ValueError("Kịch bản này chỉ chạy một vòng trước khi kiểm tra lại kết quả.")
     result.setdefault("reference_size", None)
     reference = result["reference_size"]
     if reference is not None:
@@ -91,10 +96,11 @@ def validate_profile(profile: dict, template_dir: Path | None = None) -> dict:
             step.setdefault("duration_ms", 500)
             _number(step["duration_ms"], "duration_ms", 1, 60000, integer=True)
         elif action in {"tap_image", "wait_image"}:
-            name = step.get("template")
-            path = template_path(template_dir or Path("."), name)
-            if template_dir is not None and not path.is_file():
-                raise ValueError(f"Missing template: {name}")
+            name = step.setdefault("template", "")
+            if name != "":
+                path = template_path(template_dir or Path("."), name)
+                if template_dir is not None and not path.is_file():
+                    raise ValueError(f"Missing template: {name}")
             step.setdefault("threshold", 0.9)
             step.setdefault("timeout", 15)
             _number(step["threshold"], "threshold", 0.1, 1)
@@ -110,6 +116,13 @@ def validate_profile(profile: dict, template_dir: Path | None = None) -> dict:
                 step["region"] = list(region)
         elif action == "wait":
             _number(step.get("seconds"), "seconds", 0, 3600)
+        elif action == "confirm":
+            prompt = step.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 1000:
+                raise ValueError("Nội dung xác nhận cần có từ 1 đến 1000 ký tự.")
+            step["prompt"] = prompt.strip()
+            step.setdefault("timeout", 600)
+            _number(step["timeout"], "Confirmation timeout", 1, 3600)
         elif action == "keyevent":
             if not isinstance(step.get("code"), str) or step["code"] not in KEYS:
                 raise ValueError("Unsupported key. Use BACK, ENTER, HOME, MENU, ESCAPE, or TAB.")
@@ -127,8 +140,10 @@ class Runner:
         self._lock = threading.RLock()
         self._input_lock = threading.Lock()
         self._stop = threading.Event()
+        self._confirmation_event = threading.Event()
+        self._confirmation_deadline: float | None = None
         self._thread: threading.Thread | None = None
-        self._state = {"running": False, "stopping": False, "profile_id": None, "step_index": None, "step_name": "", "iteration": 0, "repeat": 0, "dry_run": False, "error": None, "logs": []}
+        self._state = {"running": False, "stopping": False, "profile_id": None, "step_index": None, "step_name": "", "iteration": 0, "repeat": 0, "dry_run": False, "error": None, "logs": [], "awaiting_confirmation": False, "confirmation_prompt": "", "confirmation_id": None}
 
     def status(self) -> dict:
         with self._lock:
@@ -147,6 +162,9 @@ class Runner:
         profile = validate_profile(profile, self.template_dir)
         if not profile["steps"]:
             raise ValueError("Add workflow steps before starting.")
+        incomplete = [str(index + 1) for index, step in enumerate(profile["steps"]) if step["action"] in {"tap_image", "wait_image"} and not step["template"]]
+        if incomplete:
+            raise ValueError(f"Chưa gán ảnh mẫu cho bước {', '.join(incomplete)}. Hãy chụp màn hình LDPlayer và chọn ảnh mẫu cho từng bước trước khi chạy.")
         if not profile["reference_size"]:
             raise ValueError("Capture the device screen and set reference_size before starting.")
         if not isinstance(dry_run, bool):
@@ -155,18 +173,56 @@ class Runner:
             if self._thread and self._thread.is_alive():
                 raise RuntimeError("A workflow is already running. Stop it before starting another.")
             self._stop.clear()
-            self._state = {"running": True, "stopping": False, "profile_id": profile["id"], "step_index": None, "step_name": "", "iteration": 0, "repeat": profile["repeat"], "dry_run": dry_run, "error": None, "logs": []}
+            self._confirmation_event.clear()
+            self._confirmation_deadline = None
+            self._state = {"running": True, "stopping": False, "profile_id": profile["id"], "step_index": None, "step_name": "", "iteration": 0, "repeat": profile["repeat"], "dry_run": dry_run, "error": None, "logs": [], "awaiting_confirmation": False, "confirmation_prompt": "", "confirmation_id": None}
             self._thread = threading.Thread(target=self._run, args=(profile, dry_run), name="thanlong-runner", daemon=True)
             self._thread.start()
 
     def stop(self):
-        self._stop.set()
         with self._lock:
+            self._stop.set()
+            self._confirmation_event.set()
+            self._confirmation_deadline = None
             if self._state["running"]:
-                self._state["stopping"] = True
+                self._state.update(stopping=True, awaiting_confirmation=False, confirmation_prompt="", confirmation_id=None)
         # Wait for any input already in flight; none may begin after stop returns.
         with self._input_lock:
             pass
+
+    def confirm(self, confirmation_id: str) -> None:
+        """Release only the currently pending checkpoint, once."""
+        with self._lock:
+            if (not isinstance(confirmation_id, str) or not confirmation_id
+                    or not self._state["running"] or self._state["stopping"] or self._stop.is_set()
+                    or not self._state["awaiting_confirmation"]
+                    or confirmation_id != self._state["confirmation_id"]):
+                raise ValueError("Yêu cầu xác nhận đã hết hiệu lực hoặc không có bước nào đang chờ. Hãy tải lại trạng thái hiện tại.")
+            if self._confirmation_deadline is None or time.monotonic() >= self._confirmation_deadline:
+                self._confirmation_event.set()
+                raise ValueError("Đã hết thời gian xác nhận. Auto sẽ dừng tại bước hiện tại.")
+            self._state.update(awaiting_confirmation=False, confirmation_prompt="", confirmation_id=None)
+            self._confirmation_deadline = None
+            self._log("Đã nhận xác nhận của người dùng.")
+            self._confirmation_event.set()
+
+    def _confirm_step(self, step):
+        checkpoint_id = uuid.uuid4().hex
+        with self._lock:
+            self._check_stop()
+            self._confirmation_event.clear()
+            self._confirmation_deadline = time.monotonic() + step["timeout"]
+            self._state.update(awaiting_confirmation=True, confirmation_prompt=step["prompt"], confirmation_id=checkpoint_id)
+            self._log(f"Chờ xác nhận: {step['prompt']}")
+            deadline = self._confirmation_deadline
+        self._check_stop()
+        self._confirmation_event.wait(max(0, deadline - time.monotonic()))
+        with self._lock:
+            self._check_stop()
+            if self._state["confirmation_id"] == checkpoint_id:
+                self._state.update(awaiting_confirmation=False, confirmation_prompt="", confirmation_id=None)
+                self._confirmation_deadline = None
+                raise TimeoutError(f"Hết thời gian chờ xác nhận ({step['timeout']:g} giây). Auto đã dừng; chưa thực hiện bước tiếp theo.")
 
     def _check_stop(self):
         if self._stop.is_set():
@@ -225,6 +281,8 @@ class Runner:
                             self._input(self.adb.tap, match["x"] + match["width"] // 2, match["y"] + match["height"] // 2)
                     elif action == "wait":
                         self._wait(step["seconds"])
+                    elif action == "confirm":
+                        self._confirm_step(step)
                     else:
                         self._capture(profile["reference_size"])
                         if not dry_run:
@@ -242,4 +300,6 @@ class Runner:
             self._update(error=str(exc))
             self._log(str(exc), "error")
         finally:
-            self._update(running=False, stopping=False)
+            with self._lock:
+                self._confirmation_deadline = None
+                self._update(running=False, stopping=False, awaiting_confirmation=False, confirmation_prompt="", confirmation_id=None)

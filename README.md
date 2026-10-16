@@ -2,7 +2,9 @@
 
 Bản công cụ điều khiển **LDPlayer trên Windows** qua ADB, với hai hồ sơ **Trừng ác** và **Tàng bảo đồ**. Có ghi thao tác, nhận diện nút bằng ảnh, lặp hữu hạn, chạy thử không bấm và nút dừng.
 
-**Trạng thái:** bộ điều khiển và trình biên tập hoạt động; chưa có sẵn chuỗi thao tác nhiệm vụ được xác minh. Hai clip đính kèm vượt giới hạn tải 32 MiB mỗi tệp nên chưa phân tích được. Chưa thử trực tiếp với game hoặc LDPlayer thật. Các hồ sơ khởi đầu để trống; không có tọa độ game giả định. Đây là mã nguồn chạy bằng Python, chưa phải tệp `.exe` hay APK.
+**Trạng thái 0.2.0:** đã phân tích clip mới dài 203 giây và thêm **luồng Trừng ác có xác nhận**, gồm 18 bước, 11 loại ảnh cần gán trên chính LDPlayer và 4 lần chờ người dùng kiểm tra trạng thái. Chưa có luồng Tàng bảo đồ từ clip. Chưa thử trực tiếp với game hoặc LDPlayer thật trong môi trường phát triển. Hồ sơ khởi đầu để trống; dùng nút nạp luồng theo clip nếu muốn thiết lập. Đây là mã nguồn chạy bằng Python, chưa phải tệp `.exe` hay APK.
+
+Hướng dẫn từng bước và những hành vi quan sát trong clip: [Trừng ác theo clip](docs/TRUNG_AC_THEO_CLIP.md). Bản này dùng ảnh mẫu OpenCV; chưa tự đọc tên mục tiêu hoặc hiểu nhiệm vụ bằng AI.
 
 ## Chạy trên Windows
 
@@ -13,11 +15,19 @@ Bản công cụ điều khiển **LDPlayer trên Windows** qua ADB, với hai h
 5. Trong giao diện, chọn đường dẫn **`adb.exe` đi kèm bản LDPlayer đang dùng**, ví dụ `C:\LDPlayer\LDPlayer9\adb.exe`. Đường dẫn có dấu cách được hỗ trợ. Nhấn làm mới thiết bị, chọn đúng phiên có trạng thái `device`. Nếu cần, kết nối địa chỉ ADB mà phiên LDPlayer cung cấp; `127.0.0.1:5555` là giá trị ban đầu, không bảo đảm đúng với mọi phiên. Không quét cổng tự động.
 6. Chụp màn hình. Kiểm tra đúng nhân vật và phiên LDPlayer trước khi ghi hoặc bấm chạy.
 
+### Khắc phục kết nối
+
+- **Failed to fetch / Không liên lạc được với máy chủ:** mở lại `CHAY_TREN_WINDOWS.bat`, giữ cửa sổ lệnh mở, rồi Ctrl+F5 trên trình duyệt. Giao diện đã tải có thể còn hiển thị tên thiết bị cũ dù máy chủ đã dừng.
+- **10061 / connection refused ở 127.0.0.1:5555:** địa chỉ đó chưa có ADB tiếp nhận. Bấm **Làm mới thiết bị** trước để dùng thiết bị ADB đã có. Nếu chưa có, bật **ADB local / Open local connection** trong cài đặt LDPlayer, lưu và khởi động lại giả lập. Không mặc định mọi phiên dùng cùng cổng.
+- Nếu vẫn lỗi, chạy **`KIEM_TRA_KET_NOI.bat`**, gửi tệp **`THONG_TIN_KET_NOI.txt`** vừa tạo. Tệp chỉ chứa phiên bản Python, kết quả HTTP nội bộ và danh sách ADB; không chụp màn hình hoặc thu thập hồ sơ game.
+
 Nếu có nhiều giả lập hoặc cùng một giả lập xuất hiện dưới nhiều serial, phải chọn một serial cụ thể. Thiết bị `offline`/`unauthorized` chưa thể điều khiển. Dùng adb của cùng bản LDPlayer để tránh xung đột phiên bản ADB. Phần mềm không tự khởi động, đóng hoặc chỉnh cấu hình LDPlayer.
 
 ## Thiết lập hai nhiệm vụ
 
 Với từng hồ sơ, đưa game về một màn hình bắt đầu có thể lặp lại và chụp ảnh:
+
+Riêng Trừng ác có thể chọn **Nạp luồng Trừng ác từ clip** và gán ảnh vào các bước đã soạn, theo [hướng dẫn này](docs/TRUNG_AC_THEO_CLIP.md). Luồng đó có bốn lần xác nhận, chỉ chạy một vòng; chưa tự xác định đã tới tọa độ, hạ đúng mục tiêu hoặc điểm phù đã lưu.
 
 - **Ghi thao tác:** bật ghi, bấm trên ảnh để gửi lệnh bấm thật và thêm bước tọa độ. Chụp lại sau khi giao diện game thay đổi. Có thể thêm bước chờ, vuốt hoặc phím Back/Enter từ trình biên tập.
 - **Nhận diện ảnh:** kéo chọn một vùng nút/biểu tượng đủ đặc trưng trên ảnh, tạo bước **Chạm mẫu ảnh** hoặc **Chờ mẫu ảnh**. Không chọn vùng trơn, hoạt ảnh, con số thay đổi hoặc cả màn hình. Bước bấm ảnh tìm vị trí phù hợp rồi bấm tâm ảnh; ngưỡng mặc định 0,90. Có thể giới hạn vùng tìm bằng trường `region: [x, y, width, height]` trong tệp JSON xuất ra, rồi nhập lại.
@@ -49,6 +59,6 @@ python3 -m venv .venv
 
 Trên Windows dùng `.venv\Scripts\python.exe` thay cho `.venv/bin/python`. Có thể truyền `--adb "đường dẫn adb"`, `--port 8765`, `--data-dir "thư mục dữ liệu"`, `--open`. Cổng mặc định là 8765. Không cần Node.js, quyền root Android hoặc dịch vụ ngoài cho bảng điều khiển.
 
-Các kiểm thử dùng thiết bị/ảnh mô phỏng để kiểm tra lệnh ADB, tìm ảnh, giới hạn đầu vào, dừng, vòng lặp, lưu/nhập/xuất và HTTP. Chúng không thay thế việc chạy thử trên LDPlayer thật. Muốn cấu hình sẵn đúng hai clip, cần cung cấp mỗi clip dưới 32 MiB hoặc các đoạn ngắn thể hiện rõ một vòng nhiệm vụ và màn hình đầu/cuối.
+Các kiểm thử dùng thiết bị/ảnh mô phỏng để kiểm tra lệnh ADB, tìm ảnh, giới hạn đầu vào, dừng, xác nhận từng điểm chờ, vòng lặp, lưu/nhập/xuất và HTTP. Chúng không thay thế việc chạy thử trên LDPlayer thật. Muốn tiếp tục phần Tàng bảo đồ hoặc xác minh những trạng thái khác, cần clip dưới 32 MiB thể hiện thao tác tương ứng.
 
 Đóng gói mã nguồn cho Windows bằng `python scripts/package.py`. ZIP gồm mã nguồn, tệp khởi động và hướng dẫn; không chứa Python, LDPlayer, thư viện đã cài hoặc dữ liệu `.local/`.

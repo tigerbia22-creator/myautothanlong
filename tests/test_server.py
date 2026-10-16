@@ -80,6 +80,8 @@ class ServerTests(unittest.TestCase):
             headers["Origin"] = origin
         if host:
             headers["Host"] = host
+        if isinstance(body, dict) and path in {"/api/tap", "/api/swipe", "/api/template"}:
+            body = {"capture_id": self.ctl.last_capture_id, **body}
         content = raw if raw is not None else json.dumps(body) if body is not None else None
         connection.request(method, path, body=content, headers=headers)
         response = connection.getresponse()
@@ -216,12 +218,80 @@ class ServerTests(unittest.TestCase):
         self.ctl.capture()
         with patch("thanlong.server.MAX_TEMPLATE_BYTES", 64):
             with self.assertRaises(ValueError):
-                self.ctl.save_template({"x": 0, "y": 0, "width": 12, "height": 12})
+                self.ctl.save_template({"x": 0, "y": 0, "width": 12, "height": 12, "capture_id": self.ctl.last_capture_id})
         self.assertFalse(list(self.ctl.template_dir.iterdir()))
         with patch("thanlong.server.MAX_BODY", 100):
             with self.assertRaises(ValueError):
                 self.ctl.save_profile("trung_ac", self.profile())
         self.assertFalse((self.ctl.profile_dir / "trung_ac.json").exists())
+
+    def test_guided_preset_is_saved_as_uncalibrated_single_cycle(self):
+        status, available = self.request("/api/presets")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(available[0]["required_templates"]), 11)
+        self.assertEqual(available[0]["checkpoints"], 4)
+        before = copy.deepcopy(self.ctl.profiles["tang_bao_do"])
+        status, draft = self.request("/api/presets/trung_ac_video_1016", {})
+        self.assertEqual(status, 200, draft)
+        self.assertEqual(len(draft["steps"]), 18)
+        self.assertEqual(sum(step["action"] == "confirm" for step in draft["steps"]), 4)
+        self.assertTrue(draft["single_cycle"])
+        self.assertEqual(self.ctl.profiles["tang_bao_do"], before)
+        self.assertEqual(self.request("/api/run", {"profile_id": "trung_ac"})[0], 400)
+        draft["repeat"] = 2
+        self.assertEqual(self.request("/api/profiles/trung_ac", draft)[0], 400)
+
+    def test_incomplete_preset_roundtrips_without_template_files(self):
+        self.request("/api/presets/trung_ac_video_1016", {})
+        _, bundle = self.request("/api/export/trung_ac")
+        self.assertEqual(bundle["templates"], {})
+        status, restored = self.request("/api/import", {"bundle": bundle})
+        self.assertEqual(status, 200, restored)
+        self.assertEqual(restored["steps"][1]["template"], "")
+        self.assertEqual(restored["preset_id"], "trung_ac_video_1016")
+
+    def test_guided_dry_run_waits_for_four_explicit_confirmations(self):
+        self.select()
+        self.ctl.capture()
+        template = self.ctl.save_template({"x": 10, "y": 10, "width": 12, "height": 12, "capture_id": self.ctl.last_capture_id})["template"]
+        profile = self.ctl.load_preset("trung_ac_video_1016")
+        profile["reference_size"] = [100, 60]
+        for step in profile["steps"]:
+            step["delay_after"] = 0
+            if step["action"] in {"tap_image", "wait_image"}:
+                step["template"] = template
+                step["timeout"] = 0
+        self.ctl.save_profile("trung_ac", profile)
+        self.assertEqual(self.request("/api/run", {"profile_id": "trung_ac", "dry_run": True})[0], 200)
+        confirmations = []
+        deadline = time.monotonic() + 4
+        while self.ctl.runner.status()["running"] and time.monotonic() < deadline:
+            state = self.ctl.runner.status()
+            if state["awaiting_confirmation"]:
+                token = state["confirmation_id"]
+                self.assertNotIn(token, confirmations)
+                self.assertEqual(self.request("/api/confirm", {"confirmation_id": token})[0], 200)
+                self.assertEqual(self.request("/api/confirm", {"confirmation_id": token})[0], 400)
+                confirmations.append(token)
+            else:
+                time.sleep(0.005)
+        self.assertFalse(self.ctl.runner.status()["running"])
+        self.assertIsNone(self.ctl.runner.status()["error"])
+        self.assertEqual(len(confirmations), 4)
+        self.assertFalse(FakeADB.events)
+
+    def test_stale_screenshot_cannot_control_or_crop_another_device(self):
+        self.select()
+        self.ctl.capture()
+        old_capture = self.ctl.last_capture_id
+        FakeADB.available.append({"serial": "127.0.0.1:5557", "state": "device", "model": "LDPlayer2"})
+        self.ctl.set_device({"serial": "127.0.0.1:5557", "connect": False})
+        self.ctl.capture()
+        self.assertNotEqual(self.ctl.last_capture_id, old_capture)
+        self.assertEqual(self.request("/api/tap", {"x": 10, "y": 20, "capture_id": old_capture})[0], 400)
+        self.assertEqual(self.request("/api/template", {"x": 10, "y": 20, "width": 12, "height": 12, "capture_id": old_capture})[0], 400)
+        self.assertFalse(FakeADB.events)
+        self.assertEqual(self.request("/api/tap", {"x": 10, "y": 20})[0], 200)
 
 
 if __name__ == "__main__":

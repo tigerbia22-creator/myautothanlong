@@ -56,6 +56,19 @@ def wait_finished(runner, timeout=3):
     return runner.status()
 
 
+def wait_confirmation(runner, timeout=3):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = runner.status()
+        if state["awaiting_confirmation"]:
+            return state
+        if not state["running"]:
+            raise AssertionError(f"Runner ended before confirmation: {state['error']}")
+        time.sleep(0.005)
+    runner.stop()
+    raise AssertionError("Runner did not reach a confirmation checkpoint")
+
+
 class VisionTests(unittest.TestCase):
     def test_exact_match_region_has_absolute_coordinates(self):
         image = sample_image()
@@ -77,6 +90,17 @@ class VisionTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_single_cycle_is_enforced_before_execution(self):
+        source = profile([{"action": "wait", "seconds": 0}])
+        source["single_cycle"] = True
+        source["repeat"] = 2
+        with self.assertRaises(ValueError):
+            Runner(FakeADB(), Path(".")).start(source)
+        source["single_cycle"] = "true"
+        source["repeat"] = 1
+        with self.assertRaises(ValueError):
+            validate_profile(source)
+
     def test_defaults_are_added_without_mutating_input(self):
         original = profile([{"action": "tap", "x": 8, "y": 12}])
         before = copy.deepcopy(original)
@@ -97,6 +121,32 @@ class ValidationTests(unittest.TestCase):
     def test_missing_template_is_reported(self):
         with tempfile.TemporaryDirectory() as folder, self.assertRaisesRegex(ValueError, "Missing template"):
             validate_profile(profile([{"action": "wait_image", "template": "missing.png"}]), Path(folder))
+
+    def test_incomplete_visual_draft_can_be_saved_but_cannot_run(self):
+        for action in ("tap_image", "wait_image"):
+            for step in ({"action": action}, {"action": action, "template": ""}):
+                with self.subTest(step=step), tempfile.TemporaryDirectory() as folder:
+                    original = profile([step])
+                    normalized = validate_profile(original, Path(folder))
+                    self.assertEqual(normalized["steps"][0]["template"], "")
+                    adb = FakeADB()
+                    runner = Runner(adb, Path(folder))
+                    with self.assertRaisesRegex(ValueError, "Chưa gán ảnh mẫu"):
+                        runner.start(normalized)
+                    self.assertFalse(runner.status()["running"])
+                    self.assertEqual(adb.captures, 0)
+                    self.assertEqual(adb.calls, [])
+
+    def test_confirmation_prompt_and_timeout_validation(self):
+        valid = validate_profile(profile([{"action": "confirm", "prompt": "  Kiểm tra phần thưởng  "}]))
+        self.assertEqual(valid["steps"][0]["timeout"], 600)
+        self.assertEqual(valid["steps"][0]["prompt"], "Kiểm tra phần thưởng")
+        for prompt in (None, "", " \n ", "x" * 1001, False):
+            with self.subTest(prompt=prompt), self.assertRaises(ValueError):
+                validate_profile(profile([{"action": "confirm", "prompt": prompt}]))
+        for timeout in (0, 3601, float("nan"), True, "600"):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                validate_profile(profile([{"action": "confirm", "prompt": "Tiếp tục?", "timeout": timeout}]))
 
 
 class RunnerTests(unittest.TestCase):
@@ -162,6 +212,95 @@ class RunnerTests(unittest.TestCase):
             runner.start(profile([{"action": "wait", "seconds": 1}]))
         runner.stop()
         wait_finished(runner)
+
+    def test_confirmation_blocks_later_input_until_explicit_approval(self):
+        adb = FakeADB()
+        runner = Runner(adb, Path("."))
+        runner.start(profile([{"action": "confirm", "prompt": "Đã sẵn sàng?"}, {"action": "tap", "x": 10, "y": 20}]))
+        pending = wait_confirmation(runner)
+        self.assertEqual(pending["confirmation_prompt"], "Đã sẵn sàng?")
+        self.assertEqual(adb.calls, [])
+        with self.assertRaises(ValueError):
+            runner.confirm("wrong-token")
+        self.assertEqual(adb.calls, [])
+        runner.confirm(pending["confirmation_id"])
+        status = wait_finished(runner)
+        self.assertIsNone(status["error"])
+        self.assertEqual(adb.calls, [("tap", 10, 20)])
+        self.assertFalse(status["awaiting_confirmation"])
+        self.assertIsNone(status["confirmation_id"])
+        with self.assertRaises(ValueError):
+            runner.confirm(pending["confirmation_id"])
+
+    def test_checkpoint_token_cannot_release_a_later_checkpoint(self):
+        adb = FakeADB()
+        runner = Runner(adb, Path("."))
+        runner.start(profile([{"action": "confirm", "prompt": "Bước một"}, {"action": "confirm", "prompt": "Bước hai"}, {"action": "tap", "x": 10, "y": 20}]))
+        first = wait_confirmation(runner)
+        runner.confirm(first["confirmation_id"])
+        second = wait_confirmation(runner)
+        self.assertNotEqual(first["confirmation_id"], second["confirmation_id"])
+        with self.assertRaises(ValueError):
+            runner.confirm(first["confirmation_id"])
+        self.assertEqual(adb.calls, [])
+        runner.confirm(second["confirmation_id"])
+        self.assertIsNone(wait_finished(runner)["error"])
+        self.assertEqual(adb.calls, [("tap", 10, 20)])
+
+    def test_stop_interrupts_confirmation_without_later_input(self):
+        adb = FakeADB()
+        runner = Runner(adb, Path("."))
+        runner.start(profile([{"action": "confirm", "prompt": "Tiếp tục?"}, {"action": "tap", "x": 10, "y": 20}]))
+        pending = wait_confirmation(runner)
+        runner.stop()
+        status = wait_finished(runner)
+        self.assertIsNone(status["error"])
+        self.assertFalse(status["awaiting_confirmation"])
+        self.assertIsNone(status["confirmation_id"])
+        self.assertEqual(status["confirmation_prompt"], "")
+        self.assertEqual(adb.calls, [])
+        with self.assertRaises(ValueError):
+            runner.confirm(pending["confirmation_id"])
+
+    def test_confirmation_token_from_previous_run_cannot_resume_new_run(self):
+        runner = Runner(FakeADB(), Path("."))
+        workflow = profile([{"action": "confirm", "prompt": "Tiếp tục?"}])
+        runner.start(workflow)
+        first = wait_confirmation(runner)
+        runner.confirm(first["confirmation_id"])
+        wait_finished(runner)
+        runner.start(workflow)
+        second = wait_confirmation(runner)
+        self.assertNotEqual(first["confirmation_id"], second["confirmation_id"])
+        with self.assertRaises(ValueError):
+            runner.confirm(first["confirmation_id"])
+        self.assertTrue(runner.status()["awaiting_confirmation"])
+        runner.confirm(second["confirmation_id"])
+        self.assertIsNone(wait_finished(runner)["error"])
+
+    def test_confirmation_timeout_clears_state_and_stops_without_input(self):
+        adb = FakeADB()
+        runner = Runner(adb, Path("."))
+        runner.start(profile([{"action": "confirm", "prompt": "Tiếp tục?", "timeout": 1}, {"action": "tap", "x": 10, "y": 20}]))
+        pending = wait_confirmation(runner)
+        status = wait_finished(runner)
+        self.assertIn("Hết thời gian chờ xác nhận", status["error"])
+        self.assertFalse(status["awaiting_confirmation"])
+        self.assertIsNone(status["confirmation_id"])
+        self.assertEqual(adb.calls, [])
+        with self.assertRaises(ValueError):
+            runner.confirm(pending["confirmation_id"])
+
+    def test_dry_run_still_requires_confirmation_and_sends_no_input(self):
+        adb = FakeADB()
+        runner = Runner(adb, Path("."))
+        runner.start(profile([{"action": "confirm", "prompt": "Kiểm tra trước khi tiếp tục"}, {"action": "tap", "x": 10, "y": 20}]), dry_run=True)
+        pending = wait_confirmation(runner)
+        self.assertTrue(pending["dry_run"])
+        self.assertEqual(adb.calls, [])
+        runner.confirm(pending["confirmation_id"])
+        self.assertIsNone(wait_finished(runner)["error"])
+        self.assertEqual(adb.calls, [])
 
 
 class ADBTests(unittest.TestCase):

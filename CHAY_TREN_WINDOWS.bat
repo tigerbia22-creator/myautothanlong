@@ -22,5 +22,10 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" -m thanlong --open
-if errorlevel 1 pause
+echo.
+echo GIU CUA SO NAY MO KHI DUNG PHAN MEM. Dong cua so se dung may chu.
+echo Neu trang bao Failed to fetch: mo lai tep nay va nhan Ctrl+F5 tren trinh duyet.
+".venv\Scripts\python.exe" -u -m thanlong --open
+echo.
+echo May chu da dung. Neu co loi, giu lai thong bao o tren hoac chay KIEM_TRA_KET_NOI.bat.
+pause

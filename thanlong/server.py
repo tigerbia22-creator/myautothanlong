@@ -23,6 +23,7 @@ from PIL import Image
 
 from .adb import ADB, ADBError
 from .automation import Runner, template_path, validate_profile
+from .presets import PRESET_ID, build_preset, list_presets
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT.parent / ".local"
@@ -86,6 +87,7 @@ class Controller:
         self.device_error = None
         self.last_image = None
         self.last_serial = None
+        self.last_capture_id = None
         self.profiles = {}
         for profile_id, name in PROFILE_NAMES.items():
             path = self.profile_dir / f"{profile_id}.json"
@@ -160,6 +162,7 @@ class Controller:
             self.runner = Runner(candidate, self.template_dir)
             self.last_image = None
             self.last_serial = None
+            self.last_capture_id = None
             write_json(self.data_dir / "device.json", self.device)
             return self.state()
 
@@ -170,13 +173,19 @@ class Controller:
                 raise ValueError("Ảnh màn hình vượt kích thước hỗ trợ.")
             self.last_image = image.copy()
             self.last_serial = self.device["serial"]
+            self.last_capture_id = uuid.uuid4().hex
             return image
+
+    def _check_capture(self, body):
+        if self.last_image is None or self.last_serial != self.device["serial"]:
+            raise ValueError("Chụp màn hình của thiết bị đã chọn trước khi ghi thao tác.")
+        if not self.last_capture_id or body.get("capture_id") != self.last_capture_id:
+            raise ValueError("Ảnh đang xem đã cũ hoặc thuộc phiên khác. Chụp lại màn hình trước khi bấm hoặc gán ảnh.")
 
     def manual_input(self, body, swipe=False):
         with self.lock:
             self._idle()
-            if self.last_image is None or self.last_serial != self.device["serial"]:
-                raise ValueError("Chụp màn hình của thiết bị đã chọn trước khi ghi thao tác.")
+            self._check_capture(body)
             current = self.adb.screenshot()
             if current.size != self.last_image.size:
                 raise ValueError("Độ phân giải đã thay đổi. Hãy chụp lại màn hình.")
@@ -194,8 +203,7 @@ class Controller:
     def save_template(self, body):
         with self.lock:
             self._idle()
-            if self.last_image is None or self.last_serial != self.device["serial"]:
-                raise ValueError("Chụp màn hình trước khi chọn vùng ảnh.")
+            self._check_capture(body)
             x = integer(body.get("x"), "x", high=self.last_image.width - 1)
             y = integer(body.get("y"), "y", high=self.last_image.height - 1)
             width = integer(body.get("width"), "width", 4, self.last_image.width - x)
@@ -218,6 +226,8 @@ class Controller:
                 raise ValueError("Hồ sơ không tồn tại.")
             body = copy.deepcopy(body)
             body["id"] = profile_id
+            if body.get("preset_id") == PRESET_ID and (body.get("repeat", 1) != 1 or isinstance(body.get("repeat"), bool)):
+                raise ValueError("Kịch bản theo clip chỉ chạy một vòng. Hãy kiểm tra kết quả trước khi bắt đầu vòng tiếp theo.")
             normalized = validate_profile(body, self.template_dir)
             self._portable_bundle(normalized)
             write_json(self.profile_dir / f"{profile_id}.json", normalized)
@@ -230,7 +240,7 @@ class Controller:
             return self._portable_bundle(profile)
 
     def _portable_bundle(self, profile):
-        names = {step["template"] for step in profile["steps"] if step["action"] in {"tap_image", "wait_image"}}
+        names = {step["template"] for step in profile["steps"] if step["action"] in {"tap_image", "wait_image"} and step.get("template")}
         templates = {}
         total = 0
         for name in sorted(names):
@@ -261,7 +271,7 @@ class Controller:
             templates = bundle.get("templates", {})
             if not isinstance(templates, dict) or len(templates) > 500:
                 raise ValueError("Danh sách ảnh mẫu không hợp lệ.")
-            needed = {step["template"] for step in profile["steps"] if step["action"] in {"tap_image", "wait_image"}}
+            needed = {step["template"] for step in profile["steps"] if step["action"] in {"tap_image", "wait_image"} and step.get("template")}
             if needed != set(templates):
                 raise ValueError("Các ảnh mẫu trong tệp không khớp với các bước của hồ sơ.")
             staged = []
@@ -286,7 +296,7 @@ class Controller:
                     image.save(dest, "PNG")
                     mapping[old] = new
                 for step in profile["steps"]:
-                    if step["action"] in {"tap_image", "wait_image"}:
+                    if step["action"] in {"tap_image", "wait_image"} and step.get("template"):
                         step["template"] = mapping[step["template"]]
                 return self.save_profile(profile["id"], profile)
             except Exception:
@@ -309,6 +319,17 @@ class Controller:
         with self.lock:
             self.runner.stop()
             return self.runner.status()
+
+    def confirm(self, body):
+        with self.lock:
+            self.runner.confirm(body.get("confirmation_id"))
+            return self.runner.status()
+
+    def load_preset(self, preset_id):
+        with self.lock:
+            self._idle()
+            draft = build_preset(preset_id, self.profiles["trung_ac"])
+            return self.save_profile("trung_ac", draft)
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -390,11 +411,15 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 if path == "/api/state":
                     return self.json_reply(ctl.state())
+                if path == "/api/presets":
+                    return self.json_reply(list_presets())
                 if path == "/api/screenshot":
-                    image = ctl.capture()
-                    buffer = io.BytesIO()
-                    image.save(buffer, "PNG")
-                    return self.send_bytes(200, buffer.getvalue(), "image/png")
+                    with ctl.lock:
+                        image = ctl.capture()
+                        capture_id = ctl.last_capture_id
+                        buffer = io.BytesIO()
+                        image.save(buffer, "PNG")
+                    return self.send_bytes(200, buffer.getvalue(), "image/png", headers={"X-ThanLong-Capture": capture_id})
                 if path.startswith("/api/templates/"):
                     name = path.removeprefix("/api/templates/")
                     if not TEMPLATE_NAME.fullmatch(name):
@@ -421,8 +446,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/device":
                     return self.json_reply(ctl.set_device(body))
                 if path == "/api/screenshot":
-                    image = ctl.capture()
-                    return self.json_reply({"width": image.width, "height": image.height})
+                    with ctl.lock:
+                        image = ctl.capture()
+                        capture_id = ctl.last_capture_id
+                    return self.json_reply({"width": image.width, "height": image.height, "capture_id": capture_id})
                 if path == "/api/tap":
                     return self.json_reply(ctl.manual_input(body))
                 if path == "/api/swipe":
@@ -431,12 +458,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_reply(ctl.save_template(body))
                 if path == "/api/import":
                     return self.json_reply(ctl.import_profile(body))
+                if path.startswith("/api/presets/"):
+                    return self.json_reply(ctl.load_preset(path.removeprefix("/api/presets/")))
                 if path.startswith("/api/profiles/"):
                     return self.json_reply(ctl.save_profile(path.removeprefix("/api/profiles/"), body))
                 if path == "/api/run":
                     return self.json_reply(ctl.run(body))
                 if path == "/api/stop":
                     return self.json_reply(ctl.stop())
+                if path == "/api/confirm":
+                    return self.json_reply(ctl.confirm(body))
             return self.json_reply({"error": "Không tìm thấy đường dẫn."}, status=404)
         except PermissionError as exc:
             self.json_reply({"error": str(exc)}, status=403)

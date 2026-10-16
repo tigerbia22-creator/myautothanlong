@@ -3,26 +3,32 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const token = document.querySelector('meta[name="thanlong-token"]').content;
+  const serverUnavailableMessage = "Không liên lạc được với máy chủ trên máy tính. Mở CHAY_TREN_WINDOWS.bat, giữ cửa sổ lệnh mở rồi tải lại trang.";
   const typeNames = {
     tap: "Chạm tọa độ", wait: "Chờ", swipe: "Vuốt", keyevent: "Phím Android",
     tap_image: "Chạm mẫu ảnh", wait_image: "Chờ mẫu ảnh",
+    confirm: "Xác nhận thủ công",
   };
   const drafts = new Map();
   const dirty = new Set();
   let state = null;
   let selectedId = "trung_ac";
   let busy = false;
+  let confirming = false;
+  let presets = [];
   let polling = false;
   let deviceEdited = false;
   let mutationRevision = 0;
   let screenUrl = null;
   let screenSize = null;
+  let screenCaptureId = null;
   let cropMode = false;
   let selection = null;
   let dragStart = null;
   let lastLogSignature = "";
   let lastCardSignature = "";
   let noticeTimer;
+  let serverOffline = false;
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const profile = () => drafts.get(selectedId);
@@ -31,6 +37,9 @@
   const running = () => Boolean(state && state.runner && state.runner.running);
   const locked = () => busy || running();
   const uid = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const missingTemplates = (item) => (item && item.steps || []).filter((step) => ["tap_image", "wait_image"].includes(step.action) && !step.template).length;
+  const calibrated = (item) => Boolean(item && item.steps.length && item.reference_size && !missingTemplates(item));
+  const currentPreset = () => presets.find((item) => item.profile_id === selectedId);
 
   function notify(message, kind = "success", persistent = false) {
     clearTimeout(noticeTimer);
@@ -41,11 +50,23 @@
     if (!persistent && kind !== "error") noticeTimer = setTimeout(() => { notice.hidden = true; }, 6500);
   }
 
+  async function serverFetch(path, options) {
+    try { return await fetch(path, options); }
+    catch (error) {
+      if (error instanceof TypeError) {
+        const failure = new Error(serverUnavailableMessage);
+        failure.serverUnavailable = true;
+        throw failure;
+      }
+      throw error;
+    }
+  }
+
   async function api(path, body) {
     const options = body === undefined ? {cache: "no-store"} : {
       method: "POST", headers: {"Content-Type": "application/json", "X-ThanLong-Token": token}, body: JSON.stringify(body),
     };
-    const response = await fetch(path, options);
+    const response = await serverFetch(path, options);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Yêu cầu thất bại (HTTP ${response.status}).`);
     return data;
@@ -70,6 +91,9 @@
   }
 
   function mergeState(next) {
+    const recovered = serverOffline;
+    serverOffline = false;
+    if (recovered && $("notice").textContent === serverUnavailableMessage) notify("Đã liên lạc lại được với máy chủ trên máy tính.");
     const oldSerial = state && state.device && state.device.serial;
     state = next;
     if (oldSerial && next.device && oldSerial !== next.device.serial) clearScreenshot();
@@ -86,6 +110,7 @@
     renderDeviceStatus();
     renderRunner();
     renderLogs();
+    renderPresetPanel();
     if (editorChanged) renderEditor();
     updateControls();
   }
@@ -100,15 +125,48 @@
       mergeState(next);
       if (first) { renderEditor(); syncDeviceInputs(); }
     } catch (error) {
-      $("connectionBadge").textContent = "Không kết nối được máy chủ";
+      $("connectionBadge").textContent = error.serverUnavailable ? "Mất kết nối máy chủ" : "Máy chủ báo lỗi";
       $("connectionBadge").className = "status-pill";
-      if (first) notify(error.message, "error", true);
+      if (first || !serverOffline) notify(error.message, "error", true);
+      serverOffline = Boolean(error.serverUnavailable);
     } finally { polling = false; }
+  }
+
+  async function loadPresets() {
+    try {
+      const items = await api("/api/presets");
+      presets = Array.isArray(items) ? items : [];
+      renderPresetPanel();
+      if (profile()) renderEditor();
+    } catch (error) {
+      $("presetDescription").textContent = `Chưa tải được luồng từ clip: ${error.message}`;
+    }
+    updateControls();
+  }
+
+  function renderPresetPanel() {
+    $("presetPanel").hidden = selectedId !== "trung_ac";
+    const item = currentPreset();
+    if (!item) return;
+    $("presetDescription").textContent = item.description || item.name;
+    const list = $("presetTemplates");
+    const signature = JSON.stringify(item.required_templates || []);
+    if (list.dataset.signature !== signature) {
+      list.dataset.signature = signature;
+      list.replaceChildren();
+      for (const required of item.required_templates || []) {
+        const row = document.createElement("li");
+        const label = document.createElement("strong");
+        label.textContent = required.label || required.key;
+        row.append(label, document.createTextNode(required.hint ? ` — ${required.hint}` : ""));
+        list.append(row);
+      }
+    }
   }
 
   function renderCards() {
     const container = $("profileCards");
-    const signature = JSON.stringify([...drafts.values()].map((item) => [item.id, item.name, item.steps.length, dirty.has(item.id), item.id === selectedId]));
+    const signature = JSON.stringify([...drafts.values()].map((item) => [item.id, item.name, item.steps.length, missingTemplates(item), item.reference_size, dirty.has(item.id), item.id === selectedId]));
     if (signature === lastCardSignature) return;
     lastCardSignature = signature;
     const focusId = document.activeElement && document.activeElement.dataset.profileId;
@@ -132,10 +190,13 @@
       description.textContent = item.id === "trung_ac" ? "Kịch bản nhiệm vụ trừng ác" : "Kịch bản sử dụng tàng bảo đồ";
       const status = document.createElement("span");
       const count = (item.steps || []).length;
-      status.className = `profile-state${count ? " ready" : ""}`;
+      const missing = missingTemplates(item);
+      const ready = calibrated(item);
+      status.className = `profile-state${ready ? " ready" : ""}`;
       const dot = document.createElement("span");
       dot.className = "dot";
-      status.append(dot, document.createTextNode(count ? `${count} thao tác · ${dirty.has(item.id) ? "Chưa lưu" : "Đã thiết lập"}` : "Cần thiết lập thao tác"));
+      const setupText = missing ? `Cần gán ảnh cho ${missing} bước` : !item.reference_size ? "Cần ảnh tham chiếu" : "Cần kiểm thử trên giả lập";
+      status.append(dot, document.createTextNode(count ? `${count} thao tác · ${dirty.has(item.id) ? "Chưa lưu · " : ""}${setupText}` : "Cần thiết lập thao tác"));
       content.append(title, description, status);
       const check = document.createElement("span");
       check.className = "profile-check";
@@ -148,6 +209,7 @@
         if (screenSize && !profile().reference_size) { profile().reference_size = [screenSize.width, screenSize.height]; dirty.add(selectedId); }
         renderCards();
         renderEditor();
+        renderPresetPanel();
         updateControls();
       });
       container.append(card);
@@ -205,6 +267,17 @@
     $("draftState").className = `draft-state${changed ? " unsaved" : ""}`;
     $("stepCount").textContent = current ? current.steps.length : "0";
     $("referenceSizeText").textContent = current && current.reference_size ? `Khung tọa độ: ${current.reference_size.join(" × ")} px` : "Chưa có kích thước tham chiếu";
+    $("profileDescription").textContent = current && current.description || "";
+    const missing = missingTemplates(current);
+    const messages = [];
+    if (!current || !current.steps.length) messages.push("Cần thiết lập thao tác.");
+    else {
+      if (missing) messages.push(`Cần gán ảnh cho ${missing} bước nhận diện.`);
+      if (!current.reference_size) messages.push("Chụp màn hình LDPlayer để đặt kích thước tham chiếu.");
+      if (!missing && current.reference_size) messages.push("Đã gán các mẫu cần thiết. Kiểm tra từng bước trên giả lập trước khi chạy.");
+    }
+    $("calibrationStatus").textContent = messages.join(" ");
+    $("calibrationStatus").className = calibrated(current) ? "configured" : "incomplete";
   }
 
   function defaultStep(type) {
@@ -213,17 +286,18 @@
     if (type === "wait") return {...common, seconds: 1};
     if (type === "swipe") return {...common, x: 0, y: 0, x2: 0, y2: 0, duration_ms: 500, delay_after: 0.5};
     if (type === "keyevent") return {...common, code: "BACK", delay_after: 0.5};
+    if (type === "confirm") return {...common, prompt: "Kiểm tra trạng thái trên giả lập trước khi tiếp tục.", timeout: 600};
     return {...common, template: "", threshold: 0.90, timeout: 15, delay_after: type === "tap_image" ? 0.5 : 0};
   }
 
-  function makeField(labelText, step, key, {type = "number", min = 0, max, increment = "1", full = false, options} = {}) {
+  function makeField(labelText, step, key, {type = "number", min = 0, max, increment = "1", full = false, options, multiline = false} = {}) {
     const label = document.createElement("label");
     label.className = `field${full ? " full" : ""}`;
     label.append(document.createTextNode(labelText));
-    const input = document.createElement(options ? "select" : "input");
+    const input = document.createElement(options ? "select" : multiline ? "textarea" : "input");
     if (options) {
       for (const [value, text] of options) input.add(new Option(text, value));
-    } else {
+    } else if (!multiline) {
       input.type = type;
       if (type === "number") { input.min = min; input.step = increment; if (max !== undefined) input.max = max; }
     }
@@ -257,6 +331,8 @@
     if (!current) return;
     $("editorTitle").textContent = current.name;
     $("repeatCount").value = current.repeat || 1;
+    $("repeatCount").max = current.single_cycle ? 1 : 10000;
+    $("singleCycleNote").hidden = !current.single_cycle;
     updateDraftStatus();
     const list = $("stepsList");
     list.replaceChildren();
@@ -269,6 +345,7 @@
     current.steps.forEach((step, index) => {
       const card = document.createElement("div");
       card.className = "step-card";
+      if (["tap_image", "wait_image"].includes(step.action) && !step.template) card.classList.add("uncalibrated");
       const head = document.createElement("div");
       head.className = "step-head";
       const number = document.createElement("span");
@@ -322,9 +399,13 @@
       }
       if (step.action === "wait") fields.append(makeField("Thời gian chờ (giây)", step, "seconds", {increment: "0.1", full: true}));
       if (step.action === "keyevent") fields.append(makeField("Phím Android", step, "code", {options: [["BACK", "Quay lại (BACK)"], ["ENTER", "Xác nhận (ENTER)"]], full: true}));
+      if (step.action === "confirm") {
+        fields.append(makeField("Yêu cầu cần xác nhận", step, "prompt", {type: "text", full: true, multiline: true}), makeField("Chờ xác nhận tối đa (giây)", step, "timeout", {min: 1, max: 3600, full: true}));
+      }
       if (step.action === "tap_image" || step.action === "wait_image") {
         const preview = document.createElement("div");
         preview.className = "template-preview full";
+        if (!step.template) preview.classList.add("missing");
         if (step.template) {
           const img = document.createElement("img");
           img.src = `/api/templates/${encodeURIComponent(step.template)}`;
@@ -333,9 +414,18 @@
           preview.append(img);
         }
         const text = document.createElement("span");
-        text.textContent = step.template || "Chưa có mẫu. Chọn vùng ảnh ở màn hình bên cạnh để tạo thao tác nhận diện.";
+        const spec = currentPreset() && (currentPreset().required_templates || []).find((item) => item.key === step.calibration_key);
+        text.textContent = step.template || `Cần gán ảnh${spec ? `: ${spec.label}. ${spec.hint || ""}` : ". Chọn vùng ảnh ở màn hình bên cạnh rồi gán vào bước này."}`;
         preview.append(text);
-        fields.append(preview, makeField("Độ khớp (0–1)", step, "threshold", {min: 0.1, max: 1, increment: "0.01"}), makeField("Chờ tối đa (giây)", step, "timeout", {min: 0.1, increment: "0.1"}));
+        const assign = document.createElement("button");
+        assign.type = "button";
+        assign.className = "button secondary assign-template full";
+        assign.textContent = "Gán mẫu ảnh đã chọn";
+        assign.setAttribute("aria-label", `Gán mẫu ảnh đã chọn cho thao tác ${index + 1}`);
+        assign.dataset.runLock = "";
+        assign.dataset.assignTemplate = "";
+        assign.addEventListener("click", () => { if (!locked() && !deviceEdited) perform(() => assignImageStep(step)); });
+        fields.append(preview, assign, makeField("Độ khớp (0–1)", step, "threshold", {min: 0.1, max: 1, increment: "0.01"}), makeField("Chờ tối đa (giây)", step, "timeout", {min: 0.1, increment: "0.1"}));
         if (step.region) {
           const region = document.createElement("p");
           region.className = "step-note full";
@@ -364,12 +454,20 @@
     for (const id of ["addTapImage", "addWaitImage"]) $(id).disabled = locked() || !selection || !screenSize || deviceEdited || !screenMatchesProfile();
     $("useScreenSize").disabled = locked() || !screenSize || deviceEdited;
     const hasSteps = Boolean(profile() && profile().steps.length);
-    $("startRun").disabled = locked() || !hasDevice || !hasSteps || deviceEdited;
-    $("dryRun").disabled = locked() || !hasSteps || deviceEdited;
+    const ready = calibrated(profile());
+    $("startRun").disabled = locked() || !hasDevice || !ready || deviceEdited;
+    $("dryRun").disabled = locked() || !ready || deviceEdited;
+    $("repeatCount").disabled = locked() || Boolean(profile() && profile().single_cycle);
+    $("loadPreset").disabled = locked() || deviceEdited || !currentPreset() || selectedId !== "trung_ac";
+    document.querySelectorAll("[data-assign-template]").forEach((button) => {
+      button.disabled = locked() || deviceEdited || !screenSize || !selection || !screenMatchesProfile();
+    });
+    const runner = state && state.runner || {};
+    $("confirmRun").disabled = confirming || !runner.running || !runner.awaiting_confirmation || !runner.confirmation_id || runner.stopping;
     $("saveProfile").disabled = locked() || !profile();
     $("stopRun").disabled = !running() || Boolean(state.runner.stopping);
     $("stopRun").textContent = state && state.runner && state.runner.stopping ? "Đang dừng…" : "■ Dừng";
-    $("startRun").title = deviceEdited ? "Áp dụng cài đặt thiết bị trước khi chạy." : !hasSteps ? "Hãy thêm ít nhất một thao tác." : !hasDevice ? "Kết nối LDPlayer trước khi chạy." : "Gửi thao tác đến LDPlayer đã chọn";
+    $("startRun").title = deviceEdited ? "Áp dụng cài đặt thiết bị trước khi chạy." : !hasSteps ? "Hãy thêm ít nhất một thao tác." : !ready ? "Gán đầy đủ mẫu ảnh và kích thước tham chiếu trước khi chạy." : !hasDevice ? "Kết nối LDPlayer trước khi chạy." : "Gửi thao tác đến LDPlayer đã chọn";
     updateScreenMode();
   }
 
@@ -379,7 +477,7 @@
     status.className = `run-status${runner.running ? " running" : runner.error ? " error" : ""}`;
     const dot = document.createElement("span");
     dot.className = "dot";
-    const label = runner.stopping ? "Đang dừng…" : runner.running ? (runner.dry_run ? "Đang chạy thử" : "Đang chạy trên giả lập") : runner.error ? "Đã dừng do lỗi" : "Sẵn sàng";
+    const label = runner.stopping ? "Đang dừng…" : runner.running && runner.awaiting_confirmation ? "Chờ bạn xác nhận" : runner.running ? (runner.dry_run ? "Đang chạy thử" : "Đang chạy trên giả lập") : runner.error ? "Đã dừng do lỗi" : "Sẵn sàng";
     status.replaceChildren(dot, document.createTextNode(label));
     const progress = $("runProgress");
     if (runner.running) {
@@ -388,6 +486,8 @@
       progress.textContent = `Vòng ${runner.iteration || 1}/${runner.repeat || 1} · Bước ${Number.isFinite(stepIndex) ? Math.max(0, stepIndex + 1) : 0}/${current ? current.steps.length : "?"}`;
       progress.title = runner.step_name || "";
     } else { progress.textContent = runner.error ? "Xem lỗi trong nhật ký" : ""; progress.title = ""; }
+    $("confirmationPanel").hidden = !(runner.running && runner.awaiting_confirmation);
+    $("confirmationPrompt").textContent = runner.confirmation_prompt || "";
   }
 
   function renderLogs() {
@@ -432,6 +532,11 @@
     return {adb_path: $("adbPath").value.trim(), address: $("deviceAddress").value.trim(), serial: connect ? null : $("deviceSerial").value, connect};
   }
 
+  function requireCaptureId() {
+    if (!screenCaptureId || !screenSize) throw new Error("Hãy chụp lại màn hình LDPlayer trước khi ghi thao tác hoặc gán mẫu ảnh.");
+    return screenCaptureId;
+  }
+
   async function saveCurrentProfile() {
     if (!profile()) throw new Error("Chưa có kịch bản để lưu.");
     const data = clone(profile());
@@ -455,6 +560,7 @@
     if (screenUrl) URL.revokeObjectURL(screenUrl);
     screenUrl = null;
     screenSize = null;
+    screenCaptureId = null;
     $("screenshot").hidden = true;
     $("screenshot").removeAttribute("src");
     $("screenshotEmpty").hidden = false;
@@ -475,10 +581,15 @@
   }
 
   async function captureScreen() {
-    const response = await fetch(`/api/screenshot?t=${Date.now()}`, {cache: "no-store"});
+    const response = await serverFetch(`/api/screenshot?t=${Date.now()}`, {cache: "no-store"});
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}));
       throw new Error(failure.error || `Không chụp được màn hình (HTTP ${response.status}).`);
+    }
+    const captureId = response.headers.get("X-ThanLong-Capture");
+    if (!captureId) {
+      clearScreenshot();
+      throw new Error("Ảnh chưa có mã xác nhận của máy chủ. Hãy tải lại trang và chụp lại màn hình trước khi ghi thao tác hoặc gán mẫu.");
     }
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -493,6 +604,7 @@
     if (screenUrl) URL.revokeObjectURL(screenUrl);
     screenUrl = url;
     screenSize = {width: img.naturalWidth, height: img.naturalHeight};
+    screenCaptureId = captureId;
     img.hidden = false;
     $("screenshotEmpty").hidden = true;
     $("screenSize").textContent = `${screenSize.width} × ${screenSize.height} px`;
@@ -542,13 +654,43 @@
 
   async function addImageStep(type) {
     if (!selection || !screenSize) throw new Error("Hãy chọn vùng ảnh trước.");
-    const result = await api("/api/template", {...selection, name: `${selectedId}-${Date.now()}`});
+    const result = await api("/api/template", {...selection, name: `${selectedId}-${Date.now()}`, capture_id: requireCaptureId()});
     const step = {...defaultStep(type), template: result.template};
     profile().steps.push(step);
     if (!profile().reference_size) profile().reference_size = [screenSize.width, screenSize.height];
     markDirty(); renderEditor();
     notify(`Đã thêm ${type === "tap_image" ? "chạm mẫu ảnh" : "chờ mẫu ảnh"}. Lưu kịch bản trước khi đóng ứng dụng.`);
   }
+
+  async function assignImageStep(step) {
+    if (!selection || !screenSize || deviceEdited || !screenMatchesProfile()) throw new Error("Chụp màn hình đúng kích thước kịch bản và chọn vùng ảnh trước khi gán mẫu.");
+    const result = await api("/api/template", {...selection, name: `${selectedId}-${step.calibration_key || step.id}-${Date.now()}`, capture_id: requireCaptureId()});
+    const matches = step.calibration_key
+      ? profile().steps.filter((item) => ["tap_image", "wait_image"].includes(item.action) && item.calibration_key === step.calibration_key)
+      : [step];
+    for (const item of matches) item.template = result.template;
+    if (!profile().reference_size) profile().reference_size = [screenSize.width, screenSize.height];
+    markDirty(); renderEditor();
+    notify(`Đã gán mẫu cho ${matches.length} bước${step.calibration_key ? " dùng cùng nút hoặc trạng thái" : ""}. Lưu kịch bản để giữ thay đổi.`);
+  }
+
+  $("loadPreset").addEventListener("click", () => {
+    const item = currentPreset();
+    if (locked() || deviceEdited || !item || selectedId !== "trung_ac") return;
+    if (!window.confirm("Nạp luồng Trừng ác từ clip sẽ thay toàn bộ kịch bản Trừng ác đã lưu và bản nháp chưa lưu. Kịch bản Tàng bảo đồ được giữ nguyên. Luồng mới cần gán ảnh chụp LDPlayer thực tế và có bốn điểm xác nhận thủ công. Tiếp tục thay thế?")) return;
+    perform(async () => {
+      const loaded = await api(`/api/presets/${encodeURIComponent(item.id)}`, {});
+      selectedId = loaded.id;
+      drafts.set(loaded.id, clone(loaded));
+      dirty.delete(loaded.id);
+      if (screenSize && !profile().reference_size) {
+        profile().reference_size = [screenSize.width, screenSize.height];
+        dirty.add(loaded.id);
+      }
+      renderCards(); renderEditor(); renderPresetPanel();
+      notify("Đã nạp luồng Trừng ác từ clip. Gán đầy đủ mẫu ảnh thật ở từng bước trước khi chạy. Luồng chạy một lượt và chờ bạn xác nhận tại bốn điểm.", "warning", true);
+    });
+  });
 
   $("deviceForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -648,7 +790,7 @@
     if (!point) return;
     perform(async () => {
       if (!screenMatchesProfile()) throw new Error("Ảnh khác kích thước tham chiếu. Hãy kiểm tra và cập nhật khung tọa độ trước khi gửi chạm.");
-      await api("/api/tap", point);
+      await api("/api/tap", {...point, capture_id: requireCaptureId()});
       profile().steps.push({...defaultStep("tap"), ...point, name: `Chạm (${point.x}, ${point.y})`});
       markDirty(); renderEditor();
       notify(`Đã gửi chạm (${point.x}, ${point.y}) và thêm thao tác. Chụp lại ảnh để xem giao diện mới.`);
@@ -661,6 +803,7 @@
   $("addWaitImage").addEventListener("click", () => { if (!locked()) perform(() => addImageStep("wait_image")); });
   async function start(dryRun) {
     if (locked()) return;
+    if (!calibrated(profile())) { notify("Gán đầy đủ mẫu ảnh và chụp màn hình LDPlayer để xác định kích thước tham chiếu trước khi chạy.", "warning", true); return; }
     perform(async () => {
       await saveCurrentProfile();
       const runner = await api("/api/run", {profile_id: selectedId, dry_run: dryRun});
@@ -680,6 +823,20 @@
     $("stopRun").disabled = true;
     try { state.runner = await api("/api/stop", {}); renderRunner(); updateControls(); notify("Đã gửi yêu cầu dừng. Đợi lệnh đang thực hiện kết thúc."); }
     catch (error) { notify(error.message, "error", true); updateControls(); }
+  });
+  $("confirmRun").addEventListener("click", async () => {
+    const runner = state && state.runner;
+    if (confirming || !runner || !runner.running || !runner.awaiting_confirmation || !runner.confirmation_id || runner.stopping) return;
+    const confirmationId = runner.confirmation_id;
+    confirming = true;
+    mutationRevision += 1;
+    updateControls();
+    try {
+      state.runner = await api("/api/confirm", {confirmation_id: confirmationId});
+      renderRunner(); renderLogs();
+      notify("Đã gửi xác nhận. Luồng sẽ tiếp tục bước kế tiếp.");
+    } catch (error) { notify(error.message, "error", true); }
+    finally { confirming = false; updateControls(); }
   });
   $("exportProfile").addEventListener("click", () => {
     if (locked()) return;
@@ -719,5 +876,6 @@
     if (dirty.size) { event.preventDefault(); event.returnValue = ""; }
   });
   refreshState(true);
-  setInterval(() => { if (!document.hidden && !busy) refreshState(); }, 1000);
+  loadPresets();
+  setInterval(() => { if (!document.hidden && !busy && !confirming) refreshState(); }, 1000);
 })();
