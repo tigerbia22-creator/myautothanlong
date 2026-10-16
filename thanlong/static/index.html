@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="thanlong-token" content="__SESSION_TOKEN__">
+  <meta name="theme-color" content="#0c1119">
+  <title>Thần Long · Điều khiển LDPlayer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Thông tin ứng dụng">
+      <a class="brand" href="#main"><span class="brand-mark" aria-hidden="true">龍</span><span>THẦN LONG<small>LDPLAYER AUTOMATION</small></span></a>
+      <div class="sidebar-label">KHÔNG GIAN LÀM VIỆC</div>
+      <a class="nav-link active" href="#main"><span aria-hidden="true">▦</span> Bảng điều khiển <span class="nav-dot"></span></a>
+      <a class="nav-link" href="#connection"><span aria-hidden="true">▣</span> Kết nối giả lập</a>
+      <a class="nav-link" href="#editor"><span aria-hidden="true">☷</span> Kịch bản thao tác</a>
+      <a class="nav-link" href="#activity"><span aria-hidden="true">◷</span> Nhật ký hoạt động</a>
+      <div class="sidebar-bottom"><span class="local-dot"></span> Chạy cục bộ trên máy bạn<p>Điều khiển qua ADB · Không cần đăng nhập tài khoản game vào công cụ.</p></div>
+    </aside>
+
+    <main id="main">
+      <header class="topbar"><div><span class="eyebrow">THẦN LONG MOBILE</span><h1>Bảng điều khiển</h1></div><span id="connectionBadge" class="status-pill"><span class="dot"></span> Chưa kết nối</span></header>
+      <section class="intro"><div><h2>Tự động hóa theo cách của bạn<span>.</span></h2><p>Kết nối LDPlayer, thiết lập thao tác và quản lý hai chế độ trong một nơi.</p></div><span class="version-tag">ADB · LOCAL</span></section>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <div class="setup-notice"><span class="info-icon" aria-hidden="true">i</span><p><strong>Cần thiết lập trước khi chạy.</strong> Hai chế độ chưa có thao tác dựng sẵn. Hãy tạo kịch bản theo màn hình game của bạn, chạy thử rồi kiểm tra kết quả trên giả lập.</p></div>
+
+      <section class="panel connection-panel" id="connection" aria-labelledby="connectionTitle">
+        <div class="panel-heading"><div><span class="eyebrow">01 / THIẾT BỊ</span><h2 id="connectionTitle">Kết nối LDPlayer</h2></div><span id="deviceCount" class="muted small">Đang kiểm tra thiết bị…</span></div>
+        <form id="deviceForm">
+          <div class="device-fields"><label class="field path-field">Đường dẫn ADB<input id="adbPath" type="text" placeholder="C:\LDPlayer\LDPlayer9\adb.exe" autocomplete="off" data-run-lock><span class="field-hint">Dùng adb.exe trong thư mục cài LDPlayer hoặc lệnh adb có sẵn.</span></label><label class="field">Địa chỉ giả lập<input id="deviceAddress" type="text" placeholder="127.0.0.1:5555" autocomplete="off" data-run-lock><span class="field-hint">Bật ADB trong cài đặt LDPlayer.</span></label><label class="field">Thiết bị<select id="deviceSerial" data-run-lock><option value="">Tự chọn thiết bị khả dụng</option></select><span class="field-hint" id="selectedDeviceHint">Chọn đúng phiên giả lập đang chơi.</span></label></div>
+          <div class="connection-actions"><span class="small muted">Mở game và vào nhân vật trước khi tạo kịch bản.</span><div class="button-group"><button type="button" class="button secondary" id="refreshDevices" data-run-lock>Làm mới thiết bị</button><button type="submit" class="button primary" id="connectButton" data-run-lock><span aria-hidden="true">↗</span> Kết nối</button></div></div>
+        </form>
+      </section>
+
+      <section class="mode-section" aria-labelledby="modeTitle"><div class="section-heading"><div><span class="eyebrow">02 / CHẾ ĐỘ</span><h2 id="modeTitle">Chọn kịch bản</h2></div><span class="muted small">Lưu riêng thao tác cho từng nhiệm vụ</span></div><div id="profileCards" class="profile-grid" role="group" aria-label="Chọn chế độ"></div></section>
+
+      <div class="workspace-grid">
+        <section class="panel screen-panel" aria-labelledby="screenTitle"><div class="panel-heading"><div><span class="eyebrow">03 / MÀN HÌNH</span><h2 id="screenTitle">Quan sát & ghi thao tác</h2></div><button id="captureButton" class="button secondary compact" data-run-lock>↻ Chụp màn hình</button></div><div class="screen-toolbar"><label class="toggle-label"><input type="checkbox" id="recordToggle" data-run-lock><span class="toggle-switch" aria-hidden="true"></span> Ghi thao tác chạm</label><button class="button ghost compact" id="cropToggle" aria-pressed="false" data-run-lock>⌗ Chọn mẫu ảnh</button></div><p class="screen-hint" id="screenHint">Chụp màn hình sau khi kết nối để bắt đầu.</p><div id="screenshotStage" class="screenshot-stage"><div id="screenshotEmpty" class="empty-screen"><span class="empty-screen-icon" aria-hidden="true">▣</span><strong>Màn hình giả lập sẽ hiện ở đây</strong><p>Ảnh chỉ cập nhật khi bạn chọn chụp màn hình.</p></div><img id="screenshot" alt="Ảnh chụp màn hình LDPlayer hiện tại" draggable="false" hidden><div id="cropBox" class="crop-box" hidden><span id="cropDimensions"></span></div></div><div class="screen-footer"><span id="screenSize">Chưa có ảnh</span><span id="pointerPosition">Tọa độ theo ảnh gốc</span></div><div id="cropActions" class="crop-actions" hidden><div><strong>Mẫu ảnh đã chọn</strong><p id="cropSummary" class="small muted"></p></div><div class="button-group"><button class="button secondary compact" id="addWaitImage" data-run-lock>Thêm chờ ảnh</button><button class="button primary compact" id="addTapImage" data-run-lock>Thêm chạm ảnh</button></div></div><div class="coordinate-warning"><span aria-hidden="true">△</span><p>Chạm theo tọa độ phụ thuộc độ phân giải và vị trí giao diện. Ưu tiên mẫu ảnh cho nút hoặc trạng thái có thể dịch chuyển.</p></div></section>
+
+        <section class="panel editor-panel" id="editor" aria-labelledby="editorTitle"><div class="panel-heading"><div><span class="eyebrow">04 / THAO TÁC</span><h2 id="editorTitle">Kịch bản trừng ác</h2></div><span id="draftState" class="draft-state">Đã lưu</span></div><div class="editor-settings"><label class="field">Số vòng lặp<input type="number" id="repeatCount" min="1" max="10000" value="1" data-run-lock></label><div class="step-counter"><strong id="stepCount">0</strong><span>thao tác / vòng</span></div></div><div class="reference-row"><span id="referenceSizeText">Chưa có kích thước tham chiếu</span><button id="useScreenSize" class="button ghost compact" data-run-lock>Dùng cỡ ảnh hiện tại</button></div><div id="stepsList" class="steps-list"></div><div class="add-step-row"><label class="sr-only" for="newStepType">Loại thao tác mới</label><select id="newStepType" data-run-lock><option value="tap">Chạm tọa độ</option><option value="wait">Chờ</option><option value="swipe">Vuốt</option><option value="keyevent">Phím Android</option></select><button id="addStep" class="button secondary" data-run-lock>+ Thêm</button></div><div class="profile-tools"><button id="saveProfile" class="button secondary" data-run-lock>Lưu kịch bản</button><div class="button-group"><button id="importProfile" class="button ghost compact" data-run-lock>↑ Nhập</button><button id="exportProfile" class="button ghost compact" data-run-lock>↓ Xuất JSON</button><input id="importFile" type="file" accept="application/json,.json" hidden></div></div><div class="run-controls"><div class="run-summary"><span id="runStatus" class="run-status"><span class="dot"></span> Sẵn sàng thiết lập</span><span id="runProgress" class="small muted"></span></div><div class="run-buttons"><button id="dryRun" class="button secondary" data-run-lock>▷ Chạy thử</button><button id="startRun" class="button primary" data-run-lock>▶ Chạy trên giả lập</button><button id="stopRun" class="button danger" disabled>■ Dừng</button></div><p class="small muted run-note">Chạy thử chỉ kiểm tra kịch bản; không gửi thao tác và không xác nhận nhiệm vụ trong game đã hoạt động. Dừng có thể cần chờ lệnh ADB hiện tại kết thúc.</p></div></section>
+      </div>
+
+      <section class="panel activity-panel" id="activity" aria-labelledby="activityTitle"><div class="panel-heading"><div><span class="eyebrow">THEO DÕI</span><h2 id="activityTitle">Nhật ký hoạt động</h2></div><span id="logCount" class="small muted">0 sự kiện</span></div><div id="logs" class="logs" role="log" aria-label="Nhật ký thực thi"><div class="log-empty">Các bước chạy và lỗi kết nối sẽ xuất hiện tại đây.</div></div></section>
+      <footer class="page-footer"><span>THẦN LONG <span class="footer-separator">/</span> Công cụ hỗ trợ LDPlayer</span><span>Luôn theo dõi lần chạy đầu và dùng Dừng khi cần.</span></footer>
+    </main>
+  </div>
+</body>
+</html>
